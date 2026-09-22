@@ -137,7 +137,7 @@ When a QR code is ready, `connection.update` fires with:
 manager.createInstance('session-b', {
     connectType: 'pin-code',
     phoneNumber: '5491123456789',  // digits only, no + or spaces
-    customCode: 'MYCODE1'          // optional, 8 chars max
+    customCode: 'MYCODE11'          // optional, 8 chars max
 });
 ```
 
@@ -149,7 +149,7 @@ When the code is ready, `connection.update` fires with:
     type: 'connection_pairing',
     pincode: true,
     data: {
-        pairingCode: 'ABC-12345'
+        pairingCode: 'ABCD-1234'
     }
 }
 ```
