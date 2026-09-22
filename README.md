@@ -430,3 +430,7 @@ Implements the Baileys `AuthenticationState` interface backed by SQLite (`node:s
 ### StoreIPCs (Main thread)
 
 Opens the same SQLite file from the main thread (read queries only) to check whether stored credentials exist for a given instance. Used by `hasStoredInstance` and `destroyInstance`.
+
+---
+
+> **Developed by [Zepthh](https://github.com/Zeppth) & [Orwyth](https://github.com/Syllkom)**
