@@ -2,7 +2,7 @@
 
 BaileysIPC es un wrapper para `@whiskeysockets/baileys` diseñado para ejecutar cada conexión de WhatsApp en un hilo secundario independiente (`worker_threads`) de Node.js. 
 
-El objetivo principal es aislar las sesiones: si una conexión tiene un fallo crítico o consume memoria excesiva procesando datos, no detiene el proceso principal ni a las demás sesiones. La comunicación se realiza mediante IPC (Inter-Process Communication) y las sesiones se guardan automáticamente en una base de datos SQLite gestionada con `node:sqlite`.
+El objetivo principal es aislar las sesiones: si una conexión tiene un fallo crítico, no detiene el proceso principal ni a las demás sesiones. La comunicación se realiza mediante IPC (Inter-Process Communication) y las sesiones se guardan automáticamente en una base de datos SQLite gestionada con `node:sqlite`.
 
 ---
 
