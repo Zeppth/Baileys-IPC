@@ -1,0 +1,1580 @@
+Fecha: 21/9/2026, 9:03:38 p. m.
+
+====================
+
+BaileysIPC/
+├── Library/
+│   ├── BaileysIPC.js
+│   ├── InstanceIPC.js
+│   ├── InterceptBaileys.js
+│   ├── IPCProxy.js
+│   ├── IPCRequest.js
+│   ├── IPCStreams.js
+│   ├── IPCWorker.js
+│   └── StoreIPCs.js
+├── Worker/
+│   ├── Library/
+│   │   ├── AuthState.js
+│   │   ├── Connect.js
+│   │   ├── InterceptBaileys.js
+│   │   └── Message.js
+│   └── index.js
+├── dependencies.json
+└── index.js
+
+====================
+
+BaileysIPC\dependencies.json
+________
+   1 | {
+   2 |     "dependencies": {
+   3 |         "@hapi/boom": "^10.0.1",
+   4 |         "@whiskeysockets/baileys": "latest",
+   5 |         "dot-prop": "^10.2.0",
+   6 |         "pino": "9.1.0",
+   7 |         "qrcode": "^1.5.3",
+   8 |         "qrcode-terminal": "^0.12.0"
+   9 |     }
+  10 | }
+________
+
+BaileysIPC\index.js
+________
+   1 | import { BaileysIPC } from "./Library/BaileysIPC.js";
+   2 | import { InstanceIPC } from "./Library/InstanceIPC.js";
+   3 | 
+   4 | import {
+   5 |     FileToStream,
+   6 |     BufferToStream,
+   7 |     StreamToFile,
+   8 |     StreamToBuffer,
+   9 |     generateId
+  10 | } from "./Library/IPCStreams.js";
+  11 | 
+  12 | import * as baileys from "@whiskeysockets/baileys";
+  13 | 
+  14 | export {
+  15 |     BaileysIPC,
+  16 |     InstanceIPC,
+  17 |     FileToStream,
+  18 |     BufferToStream,
+  19 |     StreamToFile,
+  20 |     StreamToBuffer,
+  21 |     generateId
+  22 | };
+  23 | 
+  24 | export default baileys;
+________
+
+BaileysIPC\Library\BaileysIPC.js
+________
+   1 | import { StoreIPCs } from "./StoreIPCs.js";
+   2 | import { InstanceIPC } from "./InstanceIPC.js";
+   3 | import path from "path";
+   4 | import fs from "fs";
+   5 | 
+   6 | export class BaileysIPC {
+   7 |     /**
+   8 |      * Creates a manager for multiple Baileys client instances.
+   9 |      * @param {string} StoragePath - Path where session data and databases will be stored.
+  10 |      */
+  11 |     constructor(StoragePath) {
+  12 |         this.instances = new Map();
+  13 |         fs.mkdirSync(path.resolve(StoragePath), { recursive: true });
+  14 |         this.StoreIPCs = new StoreIPCs(StoragePath)
+  15 |         this.storagePath = StoragePath
+  16 |     }
+  17 | 
+  18 |     /**
+  19 |      * Creates and runs a new WhatsApp client instance.
+  20 |      * @param {string} InstanceId - A unique non-empty string identifier for the instance.
+  21 |      * @param {Object} ConnectOptions - Connection options configuration.
+  22 |      * @param {string} ConnectOptions.connectType - Type of connection ('qr-code' or 'pin-code').
+  23 |      * @param {string} [ConnectOptions.phoneNumber] - Phone number required if connectType is 'pin-code'.
+  24 |      * @param {string} [ConnectOptions.customCode] - Optional custom pairing code.
+  25 |      * @returns {InstanceIPC} The created client instance.
+  26 |      */
+  27 |     createInstance(InstanceId, ConnectOptions) {
+  28 |         if (typeof InstanceId !== 'string' || !InstanceId.trim())
+  29 |             throw new TypeError('instanceId must be a non-empty string');
+  30 |         if (typeof ConnectOptions?.connectType !== 'string')
+  31 |             throw new TypeError('connectType must be a string');
+  32 |         if (ConnectOptions.connectType === 'pin-code' && !ConnectOptions.phoneNumber)
+  33 |             throw new Error('phoneNumber is required for pin-code connection');
+  34 | 
+  35 |         if (this.instances.has(InstanceId))
+  36 |             throw new Error(`Instance "${InstanceId}" is already running`);
+  37 | 
+  38 |         const instance = new InstanceIPC(
+  39 |             this.storagePath, this.StoreIPCs,
+  40 |             InstanceId, ConnectOptions);
+  41 | 
+  42 |         this.instances.set(InstanceId, instance);
+  43 |         return instance;
+  44 |     }
+  45 | 
+  46 |     /**
+  47 |      * Destroys an active instance and deletes its stored session data.
+  48 |      * @param {string} InstanceId - The identifier of the instance to destroy.
+  49 |      * @returns {Promise<boolean>} True when successfully destroyed.
+  50 |      */
+  51 |     async destroyInstance(InstanceId) {
+  52 |         if (typeof InstanceId !== 'string' || !InstanceId.trim())
+  53 |             throw new TypeError('instanceId must be a non-empty string');
+  54 | 
+  55 |         const instance = this.instances.get(InstanceId);
+  56 |         if (instance) (await instance.destroy(),
+  57 |             this.instances.delete(InstanceId));
+  58 |             
+  59 |         this.StoreIPCs.delete(InstanceId);
+  60 |         return true;
+  61 |     }
+  62 | 
+  63 |     /**
+  64 |      * Checks if an instance exists either in memory or stored in the database.
+  65 |      * @param {string} InstanceId - The instance identifier to check.
+  66 |      * @returns {boolean} True if found.
+  67 |      */
+  68 |     hasStoredInstance(InstanceId) {
+  69 |         return this.StoreIPCs.has(InstanceId)
+  70 |             || this.instances.has(InstanceId);
+  71 |     }
+  72 | 
+  73 |     /**
+  74 |      * Retrieves an array of all active instance identifiers.
+  75 |      * @returns {string[]} List of active instance IDs.
+  76 |      */
+  77 |     InstancesActive() {
+  78 |         return Array.from(this.instances.keys())
+  79 |     }
+  80 | 
+  81 |     /**
+  82 |      * Checks if an instance is currently active in memory.
+  83 |      * @param {string} InstanceId - The instance identifier.
+  84 |      * @returns {boolean} True if running.
+  85 |      */
+  86 |     hasInstance(InstanceId) {
+  87 |         return this.instances.has(InstanceId);
+  88 |     }
+  89 | 
+  90 |     /**
+  91 |      * Gets an active instance by its identifier.
+  92 |      * @param {string} InstanceId - The instance identifier.
+  93 |      * @returns {InstanceIPC|undefined} The instance object if active.
+  94 |      */
+  95 |     getInstance(InstanceId) {
+  96 |         return this.instances.get(InstanceId)
+  97 |     }
+  98 | }
+________
+
+BaileysIPC\Library\InstanceIPC.js
+________
+   1 | import path from "path";
+   2 | import { fileURLToPath } from "url";
+   3 | import { EventEmitter } from "events";
+   4 | 
+   5 | import { IPCWorker } from "./IPCWorker.js";
+   6 | import { IPCRequest } from "./IPCRequest.js";
+   7 | import { IPCProxy } from "./IPCProxy.js";
+   8 | 
+   9 | import { InterceptBaileys } from "./InterceptBaileys.js";
+  10 | import { StreamReceiver, StreamSender } from "./IPCStreams.js";
+  11 | 
+  12 | const __filename = fileURLToPath(import.meta.url);
+  13 | const __dirname = path.dirname(__filename);
+  14 | 
+  15 | export class InstanceIPC extends EventEmitter {
+  16 |     /**
+  17 |     * Manages a single Baileys worker instance and its IPC communication.
+  18 |     * @param {string} Storage - Path to the storage folder.
+  19 |     * @param {InstanceStore} StoreIPCs - The database instance store manager.
+  20 |     * @param {string} InstanceId - Unique identifier for this instance.
+  21 |     * @param {Object} [ConnectOptions] - Connection settings.
+  22 |     */
+  23 |     constructor(Storage, StoreIPCs,
+  24 |         InstanceId, ConnectOptions = {
+  25 |             connectType: 'qr-code',
+  26 |             phoneNumber: '000000000',
+  27 |             customCode: '123abc'
+  28 |         }) {
+  29 | 
+  30 |         super();
+  31 |         this.responses = new Map();
+  32 |         this.instanceId = InstanceId;
+  33 |         this.StoreIPCs = StoreIPCs
+  34 | 
+  35 |         this.PATHFILEWORKER = path.resolve(
+  36 |             __dirname, '../Worker/index.js');
+  37 | 
+  38 |         this.STORAGE = Storage || path.resolve('./storage/')
+  39 | 
+  40 |         this.worker = new IPCWorker(this.PATHFILEWORKER, {
+  41 |             ...ConnectOptions, STORAGE: this.STORAGE,
+  42 |             INSTANCEID: InstanceId
+  43 |         });
+  44 | 
+  45 |         this.streamSender = new StreamSender(this
+  46 |             .worker.send.bind(this.worker));
+  47 | 
+  48 |         this.streamReceiver = new StreamReceiver(this
+  49 |             .worker.send.bind(this.worker));
+  50 | 
+  51 |         this.IPCRequest = new IPCRequest(this
+  52 |             .worker.send.bind(this.worker));
+  53 | 
+  54 |         // eventExit
+  55 |         this.worker.eventExit = (exitInfo) => {
+  56 |             this.streamSender.clear('Worker terminated');
+  57 |             this.streamReceiver.clear('Worker terminated');
+  58 |             this.IPCRequest.clear('Worker terminated');
+  59 | 
+  60 |             super.emit('exit', exitInfo);
+  61 |         };
+  62 | 
+  63 |         // eventMessage
+  64 |         this.worker.eventMessage = async (msg, instance) => {
+  65 | 
+  66 |             // streamSender
+  67 |             if (msg.type === 'STREAM_READY') return this
+  68 |                 .streamSender.start(msg.streamId);
+  69 | 
+  70 |             // streamReceiver
+  71 |             if (msg.type === 'MAIN_STREAM_CHUNK') return this
+  72 |                 .streamReceiver.write(msg.streamId, msg.chunk);
+  73 |             if (msg.type === 'MAIN_STREAM_ERROR') return this
+  74 |                 .streamReceiver.abort(msg.streamId, msg.error);
+  75 |             if (msg.type === 'MAIN_STREAM_END') return this
+  76 |                 .streamReceiver.end(msg.streamId);
+  77 | 
+  78 |             // IPCRequest
+  79 |             if (msg.requestId && msg.status === 'success') this
+  80 |                 .IPCRequest.resolve(msg.requestId, msg.data);
+  81 |             else if (msg.requestId && msg.status === 'error') this
+  82 |                 .IPCRequest.reject(msg.requestId, msg.error);
+  83 | 
+  84 |             //connetion
+  85 |             if (msg.type === 'connection_open') {
+  86 |                 this.Intercept.user = msg.data;
+  87 |             }
+  88 | 
+  89 |             else if (msg.type === 'connection_close') {
+  90 |                 if (msg.action === 'restart') {
+  91 |                     instance.options.connectType = 'qr-code';
+  92 |                     await instance.stop();
+  93 |                     await instance.start();
+  94 | 
+  95 |                 }
+  96 |                 else if (msg.action === 'stop') {
+  97 |                     await instance.stop();
+  98 |                 }
+  99 |             }
+ 100 | 
+ 101 |             // connection
+ 102 |             if (msg.event === 'connection') {
+ 103 |                 super.emit('connection.update', msg)
+ 104 |             }
+ 105 |             // messages
+ 106 |             if (msg.event === 'messages') {
+ 107 |                 super.emit('messages.upsert', msg.data)
+ 108 |             }
+ 109 |         };
+ 110 | 
+ 111 |         this.Intercept = new InterceptBaileys(this);
+ 112 |         this.sock = new IPCProxy(this.request
+ 113 |             .bind(this), this.Intercept);
+ 114 |     }
+ 115 | 
+ 116 |     /**
+ 117 |      * Sends a raw IPC request payload to the background worker thread.
+ 118 |      * @param {Object} object - The request payload object containing PATH and ARGS.
+ 119 |      * @param {number} [timeout=10000] - Request timeout limit in milliseconds.
+ 120 |      * @returns {Promise<any>} A promise that resolves with the worker's response data.
+ 121 |      */
+ 122 |     request(object, timeout = 10000) {
+ 123 |         if (this.worker.status === 'stop') return null;
+ 124 |         return this.IPCRequest.send(object, timeout)
+ 125 |     };
+ 126 | 
+ 127 |     /**
+ 128 |     * Logs out the WhatsApp session, stops the worker, and clears stored data.
+ 129 |     * @returns {Promise<boolean>} True when cleanup is complete.
+ 130 |     */
+ 131 |     async destroy() {
+ 132 |         await this.sock.logout()
+ 133 |         await this.stop();
+ 134 |         this.StoreIPCs.delete(
+ 135 |             this.instanceId);
+ 136 |         return true
+ 137 |     }
+ 138 | 
+ 139 |     /**
+ 140 |     * Starts the background worker thread.
+ 141 |     * @param {Function} [func] - Optional callback function executed upon start.
+ 142 |     * @returns {Promise<any>}
+ 143 |     */
+ 144 |     async start(func) {
+ 145 |         if (typeof func === 'function')
+ 146 |             return await func(this);
+ 147 |         else return this.worker.start()
+ 148 |     }
+ 149 | 
+ 150 |     /**
+ 151 |      * Stops the background worker thread and clears active streams/requests.
+ 152 |      * @param {Function} [func] - Optional callback function executed upon stop.
+ 153 |      * @returns {Promise<any>}
+ 154 |      */
+ 155 |     async stop(func) {
+ 156 |         this.streamSender.clear('Instance stopped');
+ 157 |         this.streamReceiver.clear('Instance stopped');
+ 158 |         this.IPCRequest.clear('Instance stopped');
+ 159 | 
+ 160 |         if (typeof func === 'function')
+ 161 |             return await func(this);
+ 162 |         else return this.worker.stop()
+ 163 |     }
+ 164 | }
+________
+
+BaileysIPC\Library\InterceptBaileys.js
+________
+   1 | import {
+   2 |     isBuffer,
+   3 |     BufferToStream,
+   4 |     isStream,
+   5 | } from "./IPCStreams.js";
+   6 | 
+   7 | export class InterceptBaileys {
+   8 |     /**
+   9 |      * Creates a InterceptBaileys instance.
+  10 |      * @param {InstanceIPC} instance - The parent client instance.
+  11 |      */
+  12 |     constructor(instance) {
+  13 |         this.instance = instance;
+  14 |     }
+  15 | 
+  16 |     /**
+  17 |      * Intercepts message sending, processes media buffers or streams, and forwards the request via IPC.
+  18 |      * @param {string} jid - The recipient chat JID.
+  19 |      * @param {Object} content - The message content object.
+  20 |      * @param {Object} [options] - Additional Baileys message options.
+  21 |      * @returns {Promise<any>|Error} The IPC request promise or an Error if validation fails.
+  22 |      */
+  23 |     sendMessage(jid, content, options) {
+  24 |         if (typeof jid !== 'string') throw new TypeError('jid must be a string');
+  25 |         if (typeof content !== 'object') throw new TypeError('content must be an object');
+  26 |         if (content === null || content === undefined) throw new TypeError('content must be an object');
+  27 |         if (Array.isArray(content)) throw new TypeError('content must be an object');
+  28 | 
+  29 |         const isMedia = ['audio', 'video', 'image', 'document', 'sticker']
+  30 |             .find((key) => content[key]);
+  31 | 
+  32 |         if (isMedia) {
+  33 |             const mediaContent = content[isMedia];
+  34 |             if (isBuffer(mediaContent)) content[isMedia] = {
+  35 |                 stream: this.instance.streamSender.prepare(BufferToStream(mediaContent))
+  36 |             }; else if (isStream(mediaContent?.stream)) content[isMedia] = {
+  37 |                 stream: this.instance.streamSender.prepare(mediaContent.stream)
+  38 |             };
+  39 |         }
+  40 | 
+  41 |         return this.instance.request({
+  42 |             type: 'SOCKET', PATH: ['sendMessage'],
+  43 |             ARGS: [jid, content, options]
+  44 |         }, null);
+  45 |     }
+  46 | 
+  47 |     /**
+  48 |      * Intercepts newsletter profile picture updates, processes media, and forwards the request via IPC.
+  49 |      * @param {string} jid - The newsletter JID.
+  50 |      * @param {Buffer|Readable|Object} content - Image content as a Buffer, Stream, or stream wrapper.
+  51 |      * @returns {Promise<any>|Error} The IPC request promise or an Error if validation fails.
+  52 |      */
+  53 |     newsletterUpdatePicture(jid, content) {
+  54 |         if (typeof jid !== 'string') throw new TypeError('jid must be a string');
+  55 |         if (typeof content !== 'object') throw new TypeError('content must be an object');
+  56 |         if (content === null || content === undefined) throw new TypeError('content must be an object');
+  57 |         if (Array.isArray(content)) throw new TypeError('content must be an object');
+  58 | 
+  59 |         if (isBuffer(content)) content = {
+  60 |             stream: this.instance.streamSender.prepare(BufferToStream(content))
+  61 |         };
+  62 |         else if (isStream(content?.stream)) content = {
+  63 |             stream: this.instance.streamSender.prepare(content.stream)
+  64 |         };
+  65 | 
+  66 |         return this.instance.request({
+  67 |             type: 'SOCKET', PATH: ['newsletterUpdatePicture'],
+  68 |             ARGS: [jid, content]
+  69 |         }, null);
+  70 |     }
+  71 | 
+  72 |     /**
+  73 |      * Intercepts profile picture updates, processes media, and forwards the request via IPC.
+  74 |      * @param {string} jid - The user/target JID.
+  75 |      * @param {Buffer|Readable|Object} content - Image content as a Buffer, Stream, or stream wrapper.
+  76 |      * @param {Object} [dimensions] - Optional picture dimensions configuration.
+  77 |      * @returns {Promise<any>|Error} The IPC request promise or an Error if validation fails.
+  78 |      */
+  79 |     updateProfilePicture(jid, content, dimensions) {
+  80 |         if (typeof jid !== 'string') throw new TypeError('jid must be a string');
+  81 |         if (typeof content !== 'object') throw new TypeError('content must be an object');
+  82 |         if (content === null || content === undefined) throw new TypeError('content must be an object');
+  83 |         if (Array.isArray(content)) throw new TypeError('content must be an object');
+  84 | 
+  85 |         if (isBuffer(content)) content = {
+  86 |             stream: this.instance.streamSender.prepare(BufferToStream(content))
+  87 |         };
+  88 |         else if (isStream(content?.stream)) content = {
+  89 |             stream: this.instance.streamSender.prepare(content.stream)
+  90 |         };
+  91 | 
+  92 |         return this.instance.request({
+  93 |             type: 'SOCKET', PATH: ['updateProfilePicture'],
+  94 |             ARGS: [jid, content, dimensions]
+  95 |         }, null);
+  96 |     }
+  97 | }
+________
+
+BaileysIPC\Library\IPCProxy.js
+________
+   1 | export class IPCProxy {
+   2 |     /**
+   3 |      * Initializes the IPC proxy wrapper.
+   4 |      * @param {Function} sendCallback - Function used to dispatch IPC requests.
+   5 |      * @param {Object} [Intercept={}] - Optional object containing local interceptor methods.
+   6 |      */
+   7 |     constructor(sendCallback, Intercept = {}) {
+   8 |         this.send = sendCallback;
+   9 |         this.intercept = Intercept;
+  10 |         this.objects = {};
+  11 |         return this.Proxy([]);
+  12 |     }
+  13 | 
+  14 |     /**
+  15 |      * Recursively builds the Proxy to capture property chains and method applications.
+  16 |      * @param {string[]} path - The accumulated property path array.
+  17 |      * @returns {Proxy} A JavaScript Proxy instance.
+  18 |      */
+  19 |     Proxy(path) {
+  20 |         const get = (target, prop) => {
+  21 |             if (typeof prop === 'symbol')
+  22 |                 return Reflect.get(target, prop);
+  23 | 
+  24 |             if (prop === 'then') {
+  25 |                 if (path.length === 0) return undefined;
+  26 |                 else return (resolve, reject) => {
+  27 |                     const lastProp = path[path.length - 1];
+  28 |                     if (this.intercept[lastProp]) return Promise.resolve(
+  29 |                         this.intercept[lastProp]).then(resolve);
+  30 |                     Promise.resolve(this.send({
+  31 |                         ARGS: undefined, type: 'SOCKET', PATH: path
+  32 |                     })).then(resolve).catch(reject);
+  33 |                 };
+  34 |             }
+  35 | 
+  36 |             if (path.length === 0 && this
+  37 |                 .objects[prop] !== undefined)
+  38 |                 return this.objects[prop];
+  39 |             return this.Proxy([...path, prop]);
+  40 |         }
+  41 | 
+  42 |         return new Proxy(() => { }, {
+  43 |             get, apply: (target, thisArg, args) => {
+  44 |                 const lastProp = path[path.length - 1];
+  45 |                 if (this.intercept[lastProp]) {
+  46 |                     if (typeof this.intercept[lastProp] === 'function')
+  47 |                         return this.intercept[lastProp](...args);
+  48 |                     return this.intercept[lastProp];
+  49 |                 } else return this.send({
+  50 |                     ARGS: args.length > 0 ? args : undefined,
+  51 |                     type: 'SOCKET', PATH: path,
+  52 |                 });
+  53 |             },
+  54 | 
+  55 |             set: (target, key, value) => {
+  56 |                 if (path.length === 0)
+  57 |                     this.objects[key] = value;
+  58 |                 return true;
+  59 |             },
+  60 |             deleteProperty: (target, key) => {
+  61 |                 if (path.length === 0)
+  62 |                     delete this.objects[key];
+  63 |                 return true;
+  64 |             }
+  65 |         });
+  66 |     }
+  67 | }
+  68 | 
+  69 | 
+  70 | /*
+  71 | import { generateId } from "./IPCStreams.js";
+  72 | export class IPCProxy2 {
+  73 |     constructor(sendCallback, Intercept = {}) {
+  74 |         this.send = sendCallback;
+  75 |         this.intercept = Intercept;
+  76 |         this.map = new Map();
+  77 |         this.objects = {};
+  78 | 
+  79 |         return new Proxy({}, {
+  80 |             get: (target, prop) => {
+  81 |                 if (prop === 'then') return;
+  82 |                 if (typeof prop === 'symbol') return;
+  83 |                 if (this.objects[prop])
+  84 |                     return this.objects[prop];
+  85 | 
+  86 |                 const id = generateId();
+  87 |                 this.map.set(id, [prop]);
+  88 |                 return this.Proxy(id);
+  89 |             },
+  90 |             set: (target, key, value) => {
+  91 |                 this.objects[key] = value
+  92 |             },
+  93 |             deleteProperty: (target, key) => {
+  94 |                 delete this.objects[key]
+  95 |             }
+  96 |         });
+  97 |     }
+  98 | 
+  99 |     Proxy(Id) {
+ 100 |         const path = this.map.get(Id);
+ 101 |         if (!path) return undefined;
+ 102 | 
+ 103 |         return new Proxy({}, {
+ 104 |             get: (target, prop) => {
+ 105 |                 if (prop === 'then') return;
+ 106 |                 if (typeof prop === 'symbol') return;
+ 107 |                 if (prop === 'run') {
+ 108 |                     const array = [...path];
+ 109 |                     this.map.delete(Id);
+ 110 |                     const lastProp = array[array.length - 1]
+ 111 |                     if (this.intercept[lastProp])
+ 112 |                         return this.intercept[lastProp];
+ 113 |                     else return (...args) => this.send({
+ 114 |                         ARGS: args.length > 0 ? args : undefined,
+ 115 |                         type: 'SOCKET', PATH: array,
+ 116 |                     });
+ 117 |                 }
+ 118 |                 const array = [...path, prop];
+ 119 |                 this.map.set(Id, array);
+ 120 |                 return this.Proxy(Id);
+ 121 |             }
+ 122 |         });
+ 123 |     }
+ 124 | }*/
+________
+
+BaileysIPC\Library\IPCRequest.js
+________
+   1 | import { generateId } from "./IPCStreams.js";
+   2 | 
+   3 | export class IPCRequest {
+   4 |     /**
+   5 |      * Manages asynchronous request-response cycles between main thread and worker threads via IPC.
+   6 |      * @param {Function} sendCallback - Function used to dispatch messages to the worker.
+   7 |      */
+   8 |     constructor(sendCallback) {
+   9 |         this.requests = new Map();
+  10 |         this.send = sendCallback;
+  11 |     }
+  12 | 
+  13 |     /**
+  14 |      * Sends an IPC request and returns a promise that awaits the worker's response.
+  15 |      * @param {Object} object - The payload to send.
+  16 |      * @param {number} [timeout=10000] - Timeout duration in milliseconds.
+  17 |      * @returns {Promise<any>} Response promise.
+  18 |      */
+  19 |     send(object, timeout = 10000) {
+  20 |         const requestId = generateId();
+  21 |         return new Promise((resolve, reject) => {
+  22 | 
+  23 |             const timer = timeout ? setTimeout(() => {
+  24 |                 if (!this.requests.has(requestId)) return;
+  25 |                 this.reject(requestId, `Timeout [${requestId}]`);
+  26 |             }, timeout) : null;
+  27 | 
+  28 |             this.requests.set(requestId, { resolve, reject, timer });
+  29 | 
+  30 |             if (typeof this.send === 'function') {
+  31 |                 this.send({ ...object, requestId });
+  32 |             }
+  33 |         });
+  34 |     }
+  35 | 
+  36 |     /**
+  37 |      * Resolves a pending IPC request by its unique ID.
+  38 |      * @param {string} requestId - The unique identifier of the request.
+  39 |      * @param {any} data - The data returned from the worker.
+  40 |      * @returns {boolean} True if successfully resolved, false otherwise.
+  41 |      */
+  42 |     resolve(requestId, data) {
+  43 |         if (!this.requests.has(requestId)) return false;
+  44 |         const { resolve, timer } = this.requests.get(requestId);
+  45 |         if (timer) clearTimeout(timer); this.requests.delete(requestId);
+  46 |         resolve(data); return true;
+  47 |     }
+  48 | 
+  49 |     /**
+  50 |      * Rejects a pending IPC request due to an error or timeout.
+  51 |      * @param {string} requestId - The unique identifier of the request.
+  52 |      * @param {string|Error} errorMessage - The error message or Error object.
+  53 |      * @returns {boolean} True if successfully rejected, false otherwise.
+  54 |      */
+  55 |     reject(requestId, errorMessage) {
+  56 |         if (!this.requests.has(requestId)) return false;
+  57 |         const { reject, timer } = this.requests.get(requestId);
+  58 |         if (timer) clearTimeout(timer); this.requests.delete(requestId);
+  59 |         reject(errorMessage instanceof Error
+  60 |             ? errorMessage : new Error(errorMessage));
+  61 |         return true;
+  62 |     }
+  63 | 
+  64 |     /**
+  65 |      * Clears and rejects all active pending requests with a reason.
+  66 |      * @param {string} [reason='Worker stopped'] - The rejection reason.
+  67 |      */
+  68 |     clear(reason = 'Worker stopped') {
+  69 |         for (const [requestId, { reject, timer }]
+  70 |             of this.requests.entries()) {
+  71 |             if (timer) clearTimeout(timer);
+  72 |             reject(new Error(reason));
+  73 |         }; this.requests.clear();
+  74 |     }
+  75 | }
+________
+
+BaileysIPC\Library\IPCStreams.js
+________
+   1 | import crypto from "crypto"
+   2 | import { pipeline } from "stream/promises"
+   3 | import fs from "fs"
+   4 | 
+   5 | import {
+   6 |     Stream,
+   7 |     Readable,
+   8 |     PassThrough,
+   9 |     Writable
+  10 | } from "stream"
+  11 | 
+  12 | export const _ = {}
+  13 | 
+  14 | /**
+  15 |  * Generates a random hexadecimal uppercase ID string.
+  16 |  * @param {number} [number=6] - Number of random bytes to generate.
+  17 |  * @returns {string} The generated uppercase hex ID.
+  18 |  */
+  19 | export const generateId = (number = 6) => crypto
+  20 |     .randomBytes(number).toString('hex')
+  21 |     .toUpperCase()
+  22 | 
+  23 | /**
+  24 | * Checks if an object is any kind of Node.js stream.
+  25 | * @param {any} object - The target to check.
+  26 | * @returns {boolean} True if it's a stream instance.
+  27 | */
+  28 | export const isStream = (object) => {
+  29 |     if (object instanceof Stream) return true;
+  30 |     if (object instanceof Readable) return true;
+  31 |     if (object instanceof Writable) return true;
+  32 |     if (object instanceof PassThrough) return true;
+  33 |     return false;
+  34 | }
+  35 | 
+  36 | /**
+  37 |  * Checks if an object is a Node.js Buffer.
+  38 |  * @param {any} object - The target to check.
+  39 |  * @returns {boolean} True if it's a Buffer.
+  40 |  */
+  41 | export const isBuffer = (object) => {
+  42 |     if (Buffer.isBuffer(object)) return true;
+  43 |     return false;
+  44 | }
+  45 | 
+  46 | /**
+  47 |  * Creates a readable stream from a file path.
+  48 |  * @param {string} filePath - Path to the file.
+  49 |  * @returns {fs.ReadStream} The file read stream.
+  50 |  */
+  51 | export const FileToStream = (filePath) => {
+  52 |     if (!filePath || typeof filePath !== 'string')
+  53 |         throw new Error('Invalid file path');
+  54 |     if (!fs.existsSync(filePath))
+  55 |         throw new Error('File not found');
+  56 |     return fs.createReadStream(filePath);
+  57 | };
+  58 | 
+  59 | /**
+  60 |  * Converts a Buffer or binary input into a Readable stream.
+  61 |  * @param {Buffer|Uint8Array|string} input - The input data to convert.
+  62 |  * @returns {Readable} A readable stream containing the buffer.
+  63 |  */
+  64 | export const BufferToStream = (input) => {
+  65 |     if (!input) throw new Error('Input is required');
+  66 |     const buffer = Buffer.isBuffer(input)
+  67 |         ? input : Buffer.from(input);
+  68 |     return Readable.from([buffer]);
+  69 | };
+  70 | 
+  71 | /**
+  72 |  * Pipes a readable stream directly into a destination file path.
+  73 |  * @param {Readable} inputStream - The source stream to read from.
+  74 |  * @param {string} destPath - The destination file path.
+  75 |  * @returns {Promise<boolean>} True when the file write is complete.
+  76 |  */
+  77 | export const StreamToFile = async (inputStream, destPath) => {
+  78 |     if (!inputStream) throw new Error('Input stream is required');
+  79 |     if (!destPath || typeof destPath !== 'string')
+  80 |         throw new Error('Invalid destination path');
+  81 |     const outputStream = fs.createWriteStream(destPath);
+  82 |     await pipeline(inputStream, outputStream);
+  83 |     return true;
+  84 | };
+  85 | 
+  86 | /**
+  87 |  * Consumes a stream and converts all its data chunks into a single Buffer.
+  88 |  * @param {Readable} stream - The stream to consume.
+  89 |  * @returns {Promise<Buffer>} A promise that resolves with the combined Buffer.
+  90 |  */
+  91 | export const StreamToBuffer = async (stream) => {
+  92 |     if (!stream) throw new Error('Stream is required');
+  93 |     const chunks = [];
+  94 |     for await (const chunk of stream) {
+  95 |         chunks.push(typeof chunk === 'string'
+  96 |             ? Buffer.from(chunk) : chunk);
+  97 |     } return Buffer.concat(chunks);
+  98 | };
+  99 | 
+ 100 | export class StreamReceiver {
+ 101 |     /**
+ 102 |     * Creates a new StreamReceiver instance.
+ 103 |     * @param {Function} sendCallback - Callback function used to send messages/signals via IPC.
+ 104 |     */
+ 105 |     constructor(sendCallback) {
+ 106 |         this.streams = new Map();
+ 107 |         this.send = sendCallback;
+ 108 |     }
+ 109 | 
+ 110 |     /**
+ 111 |      * Initializes a PassThrough stream for an incoming stream ID and notifies readiness.
+ 112 |      * @param {string} streamId - The unique identifier of the stream.
+ 113 |      * @returns {PassThrough} The created pass-through stream.
+ 114 |      */
+ 115 |     init(streamId) {
+ 116 |         const pt = new PassThrough();
+ 117 |         this.streams.set(streamId, pt);
+ 118 |         if (typeof this.send === 'function') this.send(
+ 119 |             { type: 'STREAM_READY', streamId });
+ 120 |         return pt;
+ 121 |     }
+ 122 | 
+ 123 |     /**
+ 124 |      * Writes an incoming data chunk to the specified stream.
+ 125 |      * @param {string} streamId - The stream identifier.
+ 126 |      * @param {Buffer|Uint8Array} chunk - The data chunk to write.
+ 127 |      * @returns {boolean|undefined} False if the stream's internal buffer is full, otherwise true.
+ 128 |      */
+ 129 |     write(streamId, chunk) {
+ 130 |         return this.streams.get(streamId)
+ 131 |             ?.write(Buffer.from(chunk));
+ 132 |     }
+ 133 | 
+ 134 |     /**
+ 135 |      * Ends and removes a managed stream.
+ 136 |      * @param {string} streamId - The stream identifier.
+ 137 |      * @returns {boolean} True if the stream existed and was deleted.
+ 138 |      */
+ 139 |     end(streamId) {
+ 140 |         this.streams.get(streamId)?.end();
+ 141 |         return this.streams.delete(streamId);
+ 142 |     }
+ 143 | 
+ 144 |     /**
+ 145 |      * Aborts/destroys a stream with an error reason.
+ 146 |      * @param {string} streamId - The stream identifier.
+ 147 |      * @param {string} reason - The error reason message.
+ 148 |      * @returns {boolean} True if the stream existed and was deleted.
+ 149 |      */
+ 150 |     abort(streamId, reason) {
+ 151 |         this.streams.get(streamId)
+ 152 |             ?.destroy(new Error(reason));
+ 153 |         return this.streams.delete(streamId);
+ 154 |     }
+ 155 | 
+ 156 |     /**
+ 157 |     * Destroys all active incoming streams and clears the registry.
+ 158 |     * @param {string} [reason='Worker stopped'] - The reason for clearing.
+ 159 |     */
+ 160 |     clear(reason = 'Worker stopped') {
+ 161 |         for (const [streamId, stream]
+ 162 |             of this.streams.entries()) {
+ 163 |             stream.destroy(new Error(reason));
+ 164 |         }; this.streams.clear();
+ 165 |     }
+ 166 | }
+ 167 | 
+ 168 | export class StreamSender {
+ 169 |     /**
+ 170 |      * Creates a new StreamSender instance.
+ 171 |      * @param {Function} sendCallback - Callback function used to send data chunks via IPC.
+ 172 |      */
+ 173 |     constructor(sendCallback) {
+ 174 |         this.streams = new Map();
+ 175 |         this.send = sendCallback;
+ 176 |     }
+ 177 | 
+ 178 |     /**
+ 179 |     * Pauses and registers an outgoing stream, generating a token identifier.
+ 180 |     * @param {Readable} stream - The stream to prepare for sending.
+ 181 |     * @returns {{ __ipcStreamId: string }} The IPC stream tracking token object.
+ 182 |     */
+ 183 |     prepare(stream) {
+ 184 |         const streamId = generateId(8);
+ 185 |         stream.pause();
+ 186 |         this.streams.set(streamId, stream);
+ 187 |         return { __ipcStreamId: streamId };
+ 188 |     }
+ 189 | 
+ 190 |     /**
+ 191 |      * Starts listening to data events on a registered stream and transmits chunks via IPC.
+ 192 |      * @param {string} streamId - The stream tracking identifier.
+ 193 |      * @returns {boolean} True if the stream started successfully, false if not found.
+ 194 |      */
+ 195 |     start(streamId) {
+ 196 |         const stream = this.streams.get(streamId);
+ 197 |         if (!stream) return false;
+ 198 | 
+ 199 |         stream.on('data', (chunk) => {
+ 200 |             const arr = chunk.buffer.slice(chunk.byteOffset,
+ 201 |                 chunk.byteOffset + chunk.byteLength);
+ 202 | 
+ 203 |             if (typeof this.send === 'function') this.send({
+ 204 |                 type: 'MAIN_STREAM_CHUNK',
+ 205 |                 streamId, chunk: arr
+ 206 |             }, [arr]);
+ 207 |         });
+ 208 | 
+ 209 |         stream.on('end', () => {
+ 210 |             if (typeof this.send === 'function') this.send(
+ 211 |                 { type: 'MAIN_STREAM_END', streamId });
+ 212 |             this.streams.delete(streamId);
+ 213 |         });
+ 214 | 
+ 215 |         stream.on('error', (err) => {
+ 216 |             if (typeof this.send === 'function') this.send({
+ 217 |                 type: 'MAIN_STREAM_ERROR',
+ 218 |                 streamId, error: err.message
+ 219 |             });
+ 220 | 
+ 221 |             this.streams.delete(streamId);
+ 222 |         });
+ 223 | 
+ 224 |         stream.resume();
+ 225 |         return true;
+ 226 |     }
+ 227 | 
+ 228 |     /**
+ 229 |      * Aborts and destroys an outgoing stream.
+ 230 |      * @param {string} streamId - The stream identifier.
+ 231 |      * @param {string} reason - The error reason message.
+ 232 |      * @returns {undefined}
+ 233 |      */
+ 234 |     abort(streamId, reason) {
+ 235 |         const stream = this.streams.get(streamId);
+ 236 |         if (!stream) return undefined;
+ 237 |         stream.destroy(new Error(reason));
+ 238 |         this.streams.delete(streamId);
+ 239 |     }
+ 240 | 
+ 241 |     /**
+ 242 |      * Destroys all active outgoing streams and clears the registry.
+ 243 |      * @param {string} [reason='Worker stopped'] - The reason for clearing.
+ 244 |      */
+ 245 |     clear(reason = 'Worker stopped') {
+ 246 |         for (const [streamId, stream]
+ 247 |             of this.streams.entries()) {
+ 248 |             stream.destroy(new Error(reason));
+ 249 |         }; this.streams.clear();
+ 250 |     }
+ 251 | }
+________
+
+BaileysIPC\Library\IPCWorker.js
+________
+   1 | // ./library/worker.js
+   2 | 
+   3 | import path from "path";
+   4 | import { Worker } from "worker_threads";
+   5 | 
+   6 | export class IPCWorker {
+   7 |     /**
+   8 |      * Creates an IPCWorker instance.
+   9 |      * @param {string} filePath - Path to the worker script file.
+  10 |      * @param {Object} options - Initialization options to pass via workerData.
+  11 |      */
+  12 |     constructor(filePath, options) {
+  13 | 
+  14 |         if (typeof options == 'undefined')
+  15 |             throw new Error('options:required');
+  16 | 
+  17 |         this.filePath = path.resolve(filePath);
+  18 | 
+  19 |         this.status = 'stop';
+  20 |         this.options = options;
+  21 |         this.startTime = null;
+  22 |         this.worker = null;
+  23 | 
+  24 |         this.eventExit = null;
+  25 |         this.eventMessage = null;
+  26 |         this.eventError = null;
+  27 |     }
+  28 | 
+  29 |     /**
+  30 |      * Gets the uptime of the worker in milliseconds.
+  31 |      * @returns {number|null} Uptime in milliseconds or null if not running.
+  32 |      */
+  33 |     get uptime() {
+  34 |         if (!this.startTime) return null;
+  35 |         return Date.now() - this.startTime;
+  36 |     }
+  37 | 
+  38 |     /**
+  39 |      * Sends a message to the worker thread.
+  40 |      * @param {...any} args - Arguments to pass to worker's postMessage.
+  41 |      * @returns {any|null} PostMessage result or null if worker is not active.
+  42 |      */
+  43 |     send(...args) {
+  44 |         if (!this.worker) return null;
+  45 |         try { return this.worker.postMessage(...args) }
+  46 |         catch (e) { return console.error(e); }
+  47 |     }
+  48 | 
+  49 |     /**
+  50 |      * Binds internal event listeners to the underlying worker thread.
+  51 |      */
+  52 |     ev() {
+  53 |         if (!this.worker) return;
+  54 | 
+  55 |         this.worker.on('message', async (m) => {
+  56 |             if (typeof this.eventMessage === 'function') {
+  57 |                 try { return await this.eventMessage(m, this) }
+  58 |                 catch (e) { console.error('Error handling message:', e) }
+  59 |             }
+  60 |         });
+  61 | 
+  62 |         this.worker.on('exit', async (code) => {
+  63 |             if (this.status !== 'stop') setTimeout(
+  64 |                 () => this.start(), 5000);
+  65 | 
+  66 |             if (typeof this.eventExit === 'function') {
+  67 |                 try { return await this.eventExit({ code, signal: null }, this) }
+  68 |                 catch (e) { console.error('Error handling exit event:', e) }
+  69 |             }
+  70 |         });
+  71 | 
+  72 |         this.worker.on('error', async (err) => {
+  73 |             if (typeof this.eventError === 'function') {
+  74 |                 try { return await this.eventError(err, this) }
+  75 |                 catch (e) { console.error('Error handling error event:', e) }
+  76 |             }
+  77 |         });
+  78 |     }
+  79 | 
+  80 |     /**
+  81 |      * Terminates the worker thread and updates its status to stopped.
+  82 |      * @param {Function} [func] - Optional callback function to execute after stopping.
+  83 |      * @returns {Promise<any>}
+  84 |      */
+  85 |     async stop(func) {
+  86 |         try {
+  87 |             this.status = 'stop';
+  88 |             if (this.worker) await this
+  89 |                 .worker.terminate();
+  90 |             this.worker = null;
+  91 | 
+  92 |             if (typeof func === 'function')
+  93 |                 return await func(this);
+  94 |         } catch (error) {
+  95 |             console.error('worke stop error', error);
+  96 |         }
+  97 |     }
+  98 | 
+  99 |     /**
+ 100 |      * Starts or restarts the worker thread.
+ 101 |      * @param {Function} [func] - Optional callback function to execute after starting.
+ 102 |      * @returns {Promise<any>}
+ 103 |      */
+ 104 |     async start(func) {
+ 105 |         try {
+ 106 |             if (this.worker) await this.stop();
+ 107 |             const development = structuredClone(this.options);
+ 108 |             this.worker = new Worker(this.filePath,
+ 109 |                 { workerData: development });
+ 110 |             this.status = 'running';
+ 111 |             this.startTime = Date.now();
+ 112 |             this.ev();
+ 113 | 
+ 114 |             if (typeof func === 'function') {
+ 115 |                 return await func(this);
+ 116 |             }
+ 117 |         } catch (e) {
+ 118 |             this.status = 'stop';
+ 119 |             console.error('worker start error:', e);
+ 120 |         }
+ 121 |     }
+ 122 | }
+________
+
+BaileysIPC\Library\StoreIPCs.js
+________
+   1 | import { DatabaseSync } from 'node:sqlite';
+   2 | import path from 'path';
+   3 | 
+   4 | export class StoreIPCs {
+   5 |     /**
+   6 |      * Initializes the SQLite database connection and prepares statements for session management.
+   7 |      * @param {string} [storagePath='./storage/'] - Directory path where the 'data.db' database file is located.
+   8 |      */
+   9 |     constructor(storagePath = './storage/') {
+  10 |         const dbPath = path.join(storagePath, 'data.db');
+  11 |         this.db = new DatabaseSync(dbPath);
+  12 |         
+  13 |         this.db.exec('PRAGMA journal_mode = WAL;');
+  14 |         this.db.exec('PRAGMA synchronous = NORMAL;');
+  15 |         this.db.exec('PRAGMA busy_timeout = 5000;');
+  16 | 
+  17 |         this.db.exec(`CREATE TABLE IF NOT EXISTS baileys_sessions (
+  18 |             instance_id TEXT NOT NULL, key_type TEXT NOT NULL,
+  19 |             key_id TEXT NOT NULL, value TEXT NOT NULL,
+  20 |             PRIMARY KEY (instance_id, key_type, key_id)
+  21 |         );`);
+  22 | 
+  23 |         this.stmtList = this.db.prepare(`SELECT DISTINCT instance_id FROM baileys_sessions`);
+  24 |         this.stmtGetCreds = this.db.prepare(`SELECT value FROM baileys_sessions WHERE instance_id = ? AND key_type = 'credential' AND key_id = 'creds'`);
+  25 |         this.stmtDelete = this.db.prepare(`DELETE FROM baileys_sessions WHERE instance_id = ?`);
+  26 |     }
+  27 | 
+  28 |     /**
+  29 |      * Retrieves a list of all unique instance IDs stored in the database.
+  30 |      * @returns {string[]} An array of instance identifiers.
+  31 |      */
+  32 |     list() {
+  33 |         const rows = this.stmtList.all();
+  34 |         return rows.map(row => row.instance_id);
+  35 |     }
+  36 | 
+  37 |     /**
+  38 |      * Checks if a valid credential record exists for a specific instance.
+  39 |      * @param {string} InstanceId - The unique identifier of the instance.
+  40 |      * @returns {boolean} True if credentials exist, false otherwise.
+  41 |      */
+  42 |     has(InstanceId) {
+  43 |         if (typeof InstanceId !== 'string') return false;
+  44 |         const row = this.stmtGetCreds.get(InstanceId);
+  45 |         return Boolean(row);
+  46 |     }
+  47 | 
+  48 |     /**
+  49 |      * Retrieves and parses the credentials object for a specific instance.
+  50 |      * @param {string} InstanceId - The unique identifier of the instance.
+  51 |      * @returns {Object|undefined} The parsed credentials object, or undefined if not found/error.
+  52 |      */
+  53 |     getCreds(InstanceId) {
+  54 |         if (!InstanceId) return undefined;
+  55 |         const row = this.stmtGetCreds.get(InstanceId);
+  56 |         if (!row) return undefined;
+  57 | 
+  58 |         try { return JSON.parse(row.value); } catch (e) {
+  59 |             console.error(`[InstanceStore] ERROR creds ${InstanceId}:`, e);
+  60 |             return undefined;
+  61 |         }
+  62 |     }
+  63 | 
+  64 |     /**
+  65 |      * Deletes all database records associated with a specific instance ID.
+  66 |      * @param {string} InstanceId - The unique identifier of the instance to delete.
+  67 |      * @returns {boolean} True if any records were deleted, false otherwise.
+  68 |      */
+  69 |     delete(InstanceId) {
+  70 |         if (!InstanceId) return false;
+  71 |         const result = this.stmtDelete.run(InstanceId);
+  72 |         return result.changes > 0;
+  73 |     }
+  74 | }
+________
+
+BaileysIPC\Worker\index.js
+________
+   1 | "use strict";
+   2 | 
+   3 | import path from 'path';
+   4 | import v8 from 'node:v8';
+   5 | import fs from 'fs';
+   6 | 
+   7 | import { parentPort, workerData } from "worker_threads";
+   8 | 
+   9 | if (!workerData) throw new Error("Worker data is required");
+  10 | if (!workerData.STORAGE) throw new Error('STORAGE missing');
+  11 | 
+  12 | fs.mkdirSync(path.join(workerData
+  13 |     .STORAGE), { recursive: true });
+  14 | 
+  15 | process.on('uncaughtException', (err) => {
+  16 |     setTimeout(() => process.exit(1), 1000);
+  17 | });
+  18 | 
+  19 | process.on('unhandledRejection', (reason, promise) => {
+  20 |     setTimeout(() => process.exit(1), 1000);
+  21 | });
+  22 | 
+  23 | import makeWASocket, {
+  24 |     makeCacheableSignalKeyStore,
+  25 |     fetchLatestBaileysVersion, Browsers,
+  26 | } from '@whiskeysockets/baileys';
+  27 | 
+  28 | import SQLiteAuthState from './Library/AuthState.js'
+  29 | import { randomBytes } from 'crypto';
+  30 | import pino from 'pino';
+  31 | 
+  32 | const { version } = await fetchLatestBaileysVersion();
+  33 | 
+  34 | const CONNECTION = {
+  35 |     version: version, emitOwnEvents: true,
+  36 |     fireInitQueries: false, syncFullHistory: false,
+  37 |     connectTimeoutMs: 60000, retryRequestDelayMs: 5000,
+  38 |     keepAliveIntervalMs: 30000, markOnlineOnConnect: false,
+  39 |     generateHighQualityLinkPreview: true, logger: pino({ level: 'silent' }),
+  40 | 
+  41 |     browser: Browsers.ubuntu('Chrome'),
+  42 |     patchMessageBeforeSending: (message) => {
+  43 |         const UintArray = (numero) => Uint8Array
+  44 |             .from(randomBytes(numero));
+  45 |         message.messageContextInfo ||= {};
+  46 |         const info = message.messageContextInfo;
+  47 |         info.messageSecret ||= UintArray(32);
+  48 |         info.threadId ||= null;
+  49 |         return message;
+  50 |     },
+  51 |     transactionOpts: {
+  52 |         maxCommitRetries: 5,
+  53 |         delayBetweenTriesMs: 5000
+  54 |     },
+  55 |     appStateMacVerification: {
+  56 |         patch: true,
+  57 |         snapshot: true
+  58 |     },
+  59 | }
+  60 | 
+  61 | import eventMessage from './Library/Message.js';
+  62 | import eventConnect from './Library/Connect.js';
+  63 | 
+  64 | const a0 = (raw) => {
+  65 |     try {
+  66 |         raw = JSON.parse(JSON.stringify(raw, (key, value) =>
+  67 |             typeof value === 'bigint' ? value.toString() : value));
+  68 |     } catch { return null; }
+  69 |     return raw;
+  70 | }
+  71 | 
+  72 | const a1 = (raw) => {
+  73 |     try { raw = v8.deserialize(v8.serialize(raw)); }
+  74 |     catch { return null; }
+  75 |     return raw;
+  76 | }
+  77 | 
+  78 | async function StartSession() {
+  79 |     const sessFolderPath = path.join(workerData.STORAGE, 'data.db')
+  80 |     let { state, saveCreds, clearSession } = await SQLiteAuthState(
+  81 |         sessFolderPath, workerData.INSTANCEID)
+  82 | 
+  83 |     const keyStore = makeCacheableSignalKeyStore(state.keys,
+  84 |         pino({ level: "fatal" }).child({ level: "fatal" }))
+  85 | 
+  86 |     const sockConfig = { ...CONNECTION }
+  87 |     sockConfig.auth = { creds: state.creds, keys: keyStore }
+  88 | 
+  89 |     if (workerData.connectType == 'qr-code') sockConfig
+  90 |         .browser = Browsers.macOS('Desktop')
+  91 | 
+  92 |     const sock = makeWASocket(sockConfig);
+  93 |     sock.ev.on('creds.update', saveCreds);
+  94 | 
+  95 |     if (workerData.connectType == 'pin-code') {
+  96 |         let numero = workerData.phoneNumber.replace(/\D/g, '')
+  97 |         await new Promise(resolve => setTimeout(resolve, 3000));
+  98 |         const pairingCode = await sock.requestPairingCode(numero,
+  99 |             workerData.customCode ?? null);
+ 100 | 
+ 101 |         parentPort.postMessage({
+ 102 |             event: 'connection',
+ 103 |             type: 'connection_pairing',
+ 104 |             pincode: true, data: {
+ 105 |                 pairingCode: pairingCode
+ 106 |             }
+ 107 |         })
+ 108 |     }
+ 109 | 
+ 110 |     sock.ev.on('messages.upsert', async (raw) => {
+ 111 |         let sraw = a1(raw) ?? a0(raw);
+ 112 |         if (sraw) parentPort.postMessage({
+ 113 |             event: 'messages', data: sraw
+ 114 |         });
+ 115 |     });
+ 116 | 
+ 117 |     sock.ev.on('connection.update', async (update) => {
+ 118 |         try { return await eventConnect(update, sock, clearSession) }
+ 119 |         catch (e) { console.log('connetion:WorkerBaileys.js', e) }
+ 120 |     })
+ 121 | 
+ 122 |     parentPort.on('message', async (request) => {
+ 123 |         try { return await eventMessage(request, sock) }
+ 124 |         catch (e) { console.log('message:WorkerBaileys.js', e) }
+ 125 |     })
+ 126 | }
+ 127 | 
+ 128 | 
+ 129 | await StartSession();
+________
+
+BaileysIPC\Worker\Library\AuthState.js
+________
+   1 | import { DatabaseSync } from 'node:sqlite';
+   2 | import { initAuthCreds, BufferJSON } from '@whiskeysockets/baileys';
+   3 | 
+   4 | const DBC = new Map();
+   5 | 
+   6 | export default async function SQLiteAuthState(DBPath, instanceId, options = {}) {
+   7 |     if (typeof DBPath !== 'string') throw new Error('DBPath must be a string');
+   8 |     if (typeof instanceId !== 'string') throw new Error('instanceId must be a string');
+   9 |     const { autoPurge = false } = options;
+  10 | 
+  11 |     if (!DBC.has(DBPath)) {
+  12 |         const database = new DatabaseSync(DBPath);
+  13 |         database.exec('PRAGMA journal_mode = WAL;');
+  14 |         database.exec('PRAGMA synchronous = NORMAL;');
+  15 |         database.exec('PRAGMA busy_timeout = 5000;');
+  16 |         DBC.set(DBPath, database);
+  17 |     }
+  18 | 
+  19 |     const db = DBC.get(DBPath);
+  20 | 
+  21 |     db.exec(`CREATE TABLE IF NOT EXISTS baileys_sessions (
+  22 |         instance_id TEXT NOT NULL, key_type TEXT NOT NULL,
+  23 |         key_id TEXT NOT NULL, value TEXT NOT NULL,
+  24 |         PRIMARY KEY (instance_id, key_type, key_id)
+  25 |     );
+  26 |     CREATE INDEX IF NOT EXISTS idx_instance_session ON baileys_sessions(instance_id);`);
+  27 | 
+  28 |     const selectStmt = db.prepare(`SELECT value FROM baileys_sessions WHERE instance_id = ? AND key_type = ? AND key_id = ?`);
+  29 |     const insertStmt = db.prepare(`INSERT OR REPLACE INTO baileys_sessions (instance_id, key_type, key_id, value) VALUES (?, ?, ?, ?)`);
+  30 |     const deleteStmt = db.prepare(`DELETE FROM baileys_sessions WHERE instance_id = ? AND key_type = ? AND key_id = ?`);
+  31 |     const clearInstanceStmt = db.prepare(`DELETE FROM baileys_sessions WHERE instance_id = ?`);
+  32 |     const purgeKeysStmt = db.prepare(`DELETE FROM baileys_sessions WHERE instance_id = ? AND key_type = 'pre-key'`);
+  33 | 
+  34 |     let creds;
+  35 |     try {
+  36 |         const rawCreds = selectStmt.get(instanceId, 'credential', 'creds');
+  37 |         creds = rawCreds ? JSON.parse(rawCreds.value, BufferJSON.reviver) : initAuthCreds();
+  38 |     } catch (e) {
+  39 |         console.error(`[SQLiteAuthState] ERROR creds ${instanceId}`, e);
+  40 |         creds = initAuthCreds();
+  41 |     }
+  42 | 
+  43 |     const keys = {
+  44 |         set: (data) => {
+  45 |             db.exec('BEGIN TRANSACTION;');
+  46 |             try {
+  47 |                 for (const category in data) for (const id in data[category]) {
+  48 |                     const value = data[category][id];
+  49 |                     if (value) insertStmt.run(instanceId, category, String(id),
+  50 |                         JSON.stringify(value, BufferJSON.replacer));
+  51 |                     else deleteStmt.run(instanceId, category, String(id));
+  52 |                 }
+  53 | 
+  54 |                 if (autoPurge && data['pre-key']) {
+  55 |                     purgeKeysStmt.run(instanceId);
+  56 |                 }
+  57 |                 db.exec('COMMIT;');
+  58 |             } catch (error) {
+  59 |                 db.exec('ROLLBACK;');
+  60 |                 console.error(`[SQLiteAuthState] ERROR set ${instanceId}:`, error);
+  61 |             }
+  62 |         },
+  63 |         get: (type, ids) => {
+  64 |             const data = {};
+  65 |             try {
+  66 |                 for (const id of ids) {
+  67 |                     const row = selectStmt.get(instanceId, type, String(id));
+  68 |                     if (row) data[id] = JSON.parse(row.value, BufferJSON.reviver);
+  69 |                 }
+  70 |             } catch (error) {
+  71 |                 console.error(`[SQLiteAuthState] ERROR get ${type} ${instanceId}:`, error);
+  72 |             }
+  73 |             return data;
+  74 |         },
+  75 |     };
+  76 | 
+  77 |     return {
+  78 |         state: { creds, keys },
+  79 |         saveCreds: () => {
+  80 |             try {
+  81 |                 insertStmt.run(instanceId, 'credential', 'creds',
+  82 |                     JSON.stringify(creds, BufferJSON.replacer)
+  83 |                 );
+  84 |             } catch (error) {
+  85 |                 console.error(`[SQLiteAuthState] ERROR saveCreds ${instanceId}:`, error);
+  86 |             }
+  87 |         },
+  88 |         clearSession: () => {
+  89 |             try {
+  90 |                 clearInstanceStmt.run(instanceId);
+  91 |                 console.log(`[SQLiteAuthState] clearSession: ${instanceId}`);
+  92 |             } catch (error) {
+  93 |                 console.error(`[SQLiteAuthState] ERROR clearSession ${instanceId}:`, error);
+  94 |             }
+  95 |         }
+  96 |     };
+  97 | }
+________
+
+BaileysIPC\Worker\Library\Connect.js
+________
+   1 | import qrCode from 'qrcode';
+   2 | import qrTerminal from 'qrcode-terminal';
+   3 | import { Boom } from '@hapi/boom';
+   4 | 
+   5 | import { parentPort } from "worker_threads";
+   6 | import { DisconnectReason } from '@whiskeysockets/baileys';
+   7 | 
+   8 | export default async (update, sock, clearSession) => {
+   9 |     const { lastDisconnect, connection, qr } = update;
+  10 | 
+  11 |     if (connection === 'close') {
+  12 |         const reason = new Boom(lastDisconnect
+  13 |             ?.error)?.output?.statusCode || "error";
+  14 | 
+  15 |         if ([
+  16 |             DisconnectReason.restartRequired,
+  17 |             DisconnectReason.connectionLost,
+  18 |             DisconnectReason.connectionClosed,
+  19 |             DisconnectReason.unavailableService,
+  20 |             DisconnectReason.timedOut].includes(reason)) {
+  21 |             if (reason === DisconnectReason.unavailableService)
+  22 |                 await new Promise(resolve => setTimeout(resolve, 5000));
+  23 |             parentPort.postMessage({
+  24 |                 event: 'connection', type: 'connection_close',
+  25 |                 action: 'restart', reasonCode: reason
+  26 |             })
+  27 |         }
+  28 | 
+  29 |         else if ([
+  30 |             DisconnectReason.loggedOut,
+  31 |             DisconnectReason.badSession,
+  32 |             DisconnectReason.multideviceMismatch,
+  33 |             DisconnectReason.forbidden
+  34 |         ].includes(reason)) {
+  35 |             await clearSession();
+  36 | 
+  37 |             return parentPort.postMessage({
+  38 |                 event: 'connection', type: 'connection_close',
+  39 |                 action: 'stop', reasonCode: reason
+  40 |             })
+  41 |         } else if (reason === DisconnectReason
+  42 |             .connectionReplaced) {
+  43 |             return parentPort.postMessage({
+  44 |                 event: 'connection', type: 'connection_close',
+  45 |                 action: 'stop', reasonCode: reason
+  46 |             })
+  47 |         } else return parentPort.postMessage({
+  48 |             event: 'connection', type: 'connection_close',
+  49 |             action: 'restart', reasonCode: reason
+  50 |         })
+  51 |     }
+  52 | 
+  53 |     if (connection === 'open') return parentPort.postMessage({
+  54 |         event: 'connection', type: 'connection_open', data: {
+  55 |             ...sock.user,
+  56 |             lid: sock.user?.lid ? sock.user.lid
+  57 |                 .split(":")[0] + "@lid" : null,
+  58 |             id: sock.user?.id ? sock.user.id
+  59 |                 .split(":")[0] + "@s.whatsapp.net" : null
+  60 |         }
+  61 |     })
+  62 | 
+  63 |     if (qr) {
+  64 |         const qrCodeText = await new Promise((resolve) =>
+  65 |             qrTerminal.generate(qr, { small: true },
+  66 |                 (qrCode) => resolve(qrCode)))
+  67 | 
+  68 |         return parentPort.postMessage({
+  69 |             event: 'connection',
+  70 |             type: 'connection_pairing',
+  71 |             qrcode: true, data: {
+  72 |                 rawQrCode: qr,
+  73 |                 qrCodeImage: await qrCode
+  74 |                     .toDataURL(qr),
+  75 |                 qrCodeText
+  76 |             }
+  77 |         })
+  78 |     }
+  79 | }
+________
+
+BaileysIPC\Worker\Library\InterceptBaileys.js
+________
+   1 | 
+   2 | export class InterceptBaileys {
+   3 |     constructor(streamReceiver, streamSender, sock) {
+   4 |         this.streamReceiver = streamReceiver;
+   5 |         this.streamSender = streamSender;
+   6 |         this.sock = sock;
+   7 |     }
+   8 | 
+   9 |     sendMessage(jid, content, options) {
+  10 |         if (content && typeof content === 'object') {
+  11 |             const mediaType = ['audio', 'video', 'image',
+  12 |                 'document', 'sticker'].find(o => content[o]);
+  13 | 
+  14 |             if (mediaType && content[mediaType]?.stream?.__ipcStreamId) {
+  15 |                 const streamId = content[mediaType].stream.__ipcStreamId;
+  16 |                 content[mediaType].stream = this.streamReceiver.init(streamId);
+  17 |             }
+  18 |         }
+  19 | 
+  20 |         return [jid, content, options]
+  21 |     }
+  22 | 
+  23 |     newsletterUpdatePicture(jid, content) {
+  24 |         if (content?.stream?.__ipcStreamId) {
+  25 |             const streamId = content.stream.__ipcStreamId;
+  26 |             content.stream = this.streamReceiver.init(streamId);
+  27 |         }
+  28 | 
+  29 |         return [jid, content]
+  30 |     }
+  31 | 
+  32 |     updateProfilePicture(jid, content, dimensions) {
+  33 |         if (content?.stream?.__ipcStreamId) {
+  34 |             const streamId = content.stream.__ipcStreamId;
+  35 |             content.stream = this.streamReceiver.init(streamId);
+  36 |         }
+  37 | 
+  38 |         return [jid, content, dimensions]
+  39 |     }
+  40 | }
+________
+
+BaileysIPC\Worker\Library\Message.js
+________
+   1 | import { getProperty } from 'dot-prop';
+   2 | import { parentPort } from "worker_threads";
+   3 | import { StreamReceiver, StreamSender, _ } from '../../Library/IPCStreams.js';
+   4 | import { InterceptBaileys } from './InterceptBaileys.js';
+   5 | 
+   6 | const streamSender = new StreamSender(
+   7 |     parentPort.postMessage.bind(parentPort));
+   8 | 
+   9 | const streamReceiver = new StreamReceiver(
+  10 |     parentPort.postMessage.bind(parentPort));
+  11 | 
+  12 | let Interceptors
+  13 | 
+  14 | export default async (msg, sock) => {
+  15 | 
+  16 |     if (!Interceptors) Interceptors = new InterceptBaileys(
+  17 |         streamReceiver, streamSender, sock)
+  18 | 
+  19 |     // streamSender
+  20 |     if (msg.type === 'STREAM_READY')
+  21 |         return streamSender.start(msg.streamId);
+  22 | 
+  23 |     // streamReceiver
+  24 |     if (msg.type === 'MAIN_STREAM_CHUNK')
+  25 |         return streamReceiver.write(msg.streamId, msg.chunk);
+  26 |     if (msg.type === 'MAIN_STREAM_ERROR')
+  27 |         return streamReceiver.abort(msg.streamId, msg.error);
+  28 |     if (msg.type === 'MAIN_STREAM_END')
+  29 |         return streamReceiver.end(msg.streamId);
+  30 | 
+  31 |     let { PATH, ARGS, requestId } = msg;
+  32 | 
+  33 |     try {
+  34 |         if (msg.type === 'SOCKET') {
+  35 |             let lastKey, current, parent;
+  36 | 
+  37 |             const pathString = Array.isArray(PATH)
+  38 |                 ? PATH.join('.') : PATH;
+  39 | 
+  40 |             const pathArray = Array.isArray(PATH)
+  41 |                 ? PATH : (typeof PATH === 'string'
+  42 |                     ? PATH.split('.') : []);
+  43 | 
+  44 |             if (pathArray.length > 0) {
+  45 |                 lastKey = pathArray[pathArray.length - 1];
+  46 |                 const parentPathArray = pathArray.slice(0, -1);
+  47 |                 const parentString = parentPathArray.join('.');
+  48 |                 parent = parentPathArray.length > 0
+  49 |                     ? getProperty(sock, parentString) : sock;
+  50 |                 current = getProperty(sock, pathString);
+  51 | 
+  52 |             } else if (typeof PATH === 'string') {
+  53 |                 current = sock[PATH]; parent = sock; lastKey = PATH;
+  54 |             }
+  55 | 
+  56 |             if (typeof Interceptors[lastKey] == 'function') {
+  57 |                 ARGS = await Interceptors[lastKey](...ARGS);
+  58 |             }
+  59 | 
+  60 |             if (typeof current === 'function') {
+  61 |                 const result = await current.apply(parent, ARGS || []);
+  62 | 
+  63 |                 try {
+  64 |                     parentPort.postMessage({
+  65 |                         requestId,
+  66 |                         status: 'success',
+  67 |                         data: result
+  68 |                     });
+  69 |                 } catch (e) {
+  70 |                     parentPort.postMessage({
+  71 |                         requestId, status: 'success',
+  72 |                         data: JSON.parse(JSON.stringify(result, (k, v) =>
+  73 |                             typeof v === 'bigint' ? v.toString() : v))
+  74 |                     });
+  75 |                 }
+  76 |             } else {
+  77 |                 let cloned;
+  78 |                 if (current !== undefined) {
+  79 |                     try { cloned = structuredClone(current); } catch (e) {
+  80 |                         try {
+  81 |                             cloned = JSON.parse(JSON.stringify(current, (k, v) =>
+  82 |                                 typeof v === 'bigint' ? v.toString() : v));
+  83 |                         } catch (e) { cloned = undefined; }
+  84 |                     }
+  85 |                 }
+  86 | 
+  87 |                 parentPort.postMessage({
+  88 |                     requestId,
+  89 |                     status: 'success',
+  90 |                     data: cloned
+  91 |                 });
+  92 |             }
+  93 |         }
+  94 |     } catch (e) {
+  95 |         const is428 = e?.output?.statusCode === 428
+  96 |             || e?.output?.payload?.statusCode === 428
+  97 |             || e?.message?.includes('Connection Closed')
+  98 |             || e?.message?.includes('Precondition Required')
+  99 | 
+ 100 |         parentPort.postMessage({
+ 101 |             requestId, status: 'error',
+ 102 |             error: e ? (e.stack || e.message || String(e))
+ 103 |                 : 'Unknown socket error'
+ 104 |         });
+ 105 | 
+ 106 |         if (is428) return parentPort.postMessage({
+ 107 |             event: 'connection', type: 'connection_close',
+ 108 |             action: 'restart', reasonCode: 428
+ 109 |         });
+ 110 |     }
+ 111 | }
+________
