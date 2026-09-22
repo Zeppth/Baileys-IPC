@@ -1,214 +1,432 @@
 # BaileysIPC
 
-BaileysIPC es un wrapper para `@whiskeysockets/baileys` diseñado para ejecutar cada conexión de WhatsApp en un hilo secundario independiente (`worker_threads`) de Node.js. 
+A wrapper around [@whiskeysockets/baileys](https://github.com/WhiskeySockets/Baileys) that runs each WhatsApp session in its own `worker_thread`. Communication between the main process and each worker goes through an IPC layer built on top of Node.js worker message passing.
 
-El objetivo principal es aislar las sesiones: si una conexión tiene un fallo crítico o consume memoria excesiva procesando datos, no detiene el proceso principal ni a las demás sesiones. La comunicación se realiza mediante IPC (Inter-Process Communication) y las sesiones se guardan automáticamente en una base de datos SQLite gestionada con `node:sqlite`.
+The main thread never loads Baileys directly at runtime. Instead it sends structured messages to the worker, and the worker translates them into actual Baileys socket calls. The result is sent back and resolved as a Promise on the main thread.
 
----
+The public API on the main thread mimics the Baileys socket object through a JavaScript `Proxy`, so existing call patterns continue to work with minimal changes. Every call is async and goes over IPC.
 
-## Requisitos
-
-- Node.js versión 22.0.0 o superior (necesario para el soporte nativo de `node:sqlite`).
+> This is not a REST API or a ready-to-deploy service. It is a library you integrate into your own Node.js application.
 
 ---
 
-## Instalación e integración
+## Requirements
 
-1. Copia la carpeta `BaileysIPC/` dentro de tu proyecto.
-2. Instala las dependencias necesarias en tu proyecto:
+| Requirement | Notes |
+|---|---|
+| Node.js | 22 or later. Uses `node:sqlite` (DatabaseSync), stabilized in Node 22. |
+| ESM | The project uses ES Modules. Your `package.json` must include `"type": "module"`. |
+| @whiskeysockets/baileys | `latest` |
+| @hapi/boom | `^10.0.1` - Parses Baileys disconnect reason codes. |
+| dot-prop | `^10.2.0` - Resolves nested property paths on the socket inside the worker. |
+| pino | `9.1.0` - Logger passed to the Baileys socket (set to silent by default). |
+| qrcode | `^1.5.3` - Generates base64 QR images sent back to the main thread. |
+| qrcode-terminal | `^0.12.0` - Renders QR as ASCII text, also sent to the main thread. |
 
-```bash
-npm install @whiskeysockets/baileys @hapi/boom dot-prop pino qrcode qrcode-terminal
+---
+
+## Installation
+
+Copy or clone the `BaileysIPC` folder into your project, then install the dependencies:
+
+```sh
+npm install @hapi/boom @whiskeysockets/baileys dot-prop pino@9.1.0 qrcode qrcode-terminal
+```
+
+Make sure your `package.json` has:
+
+```json
+{
+  "type": "module"
+}
 ```
 
 ---
 
-## Flujo principal de uso
+## Project Structure
 
-### 1. Inicialización básica (Código QR)
+```
+BaileysIPC/
+├── Library/
+│   ├── BaileysIPC.js         Top-level manager. Holds multiple instances.
+│   ├── InstanceIPC.js        Per-instance controller. Bridges main thread and worker.
+│   ├── InterceptBaileys.js   Main-thread interceptors for media-heavy methods.
+│   ├── IPCProxy.js           JS Proxy that makes socket calls feel local.
+│   ├── IPCRequest.js         Promise-based request/response tracker.
+│   ├── IPCStreams.js          Stream piping utilities and stream managers.
+│   ├── IPCWorker.js          Worker thread wrapper with auto-restart.
+│   └── StoreIPCs.js          SQLite session store for the main thread.
+├── Worker/
+│   ├── Library/
+│   │   ├── AuthState.js      SQLite-backed Baileys auth state.
+│   │   ├── Connect.js        Connection event handler inside the worker.
+│   │   ├── InterceptBaileys.js  Worker-side interceptors that restore streams.
+│   │   └── Message.js        IPC message dispatcher inside the worker.
+│   └── index.js              Worker entry point. Starts the Baileys socket.
+├── dependencies.json
+└── index.js                  Public exports.
+```
 
-```javascript
-import { BaileysIPC } from "./BaileysIPC/index.js";
+The `Library/` folder runs on the main thread. The `Worker/` folder runs inside the isolated thread. Both sides share `IPCStreams.js`.
 
-// Carpeta donde se creará data.db con las sesiones SQLite
-const manager = new BaileysIPC("./storage");
+---
 
-// Crear una instancia
-const client = manager.createInstance("sesion_ventas", {
-    connectType: "qr-code"
+## Basic Usage
+
+```js
+import { BaileysIPC } from './BaileysIPC/index.js';
+
+// Create a manager. Pass a path where session data will be stored.
+const manager = new BaileysIPC('./storage');
+
+// Create an instance.
+const instance = manager.createInstance('my-session', {
+    connectType: 'qr-code'
 });
 
-// Evento de conexión y generación de QR
-client.on("connection.update", (update) => {
-    // Si hay un QR disponible
-    if (update.qrcode) {
-        console.log("Escanea este QR en la terminal:");
-        console.log(update.data.qrCodeText);
+// Listen for connection events.
+instance.on('connection.update', (msg) => {
+    if (msg.type === 'connection_pairing' && msg.qrcode) {
+        console.log('Scan this QR:');
+        console.log(msg.data.qrCodeText);
     }
-
-    // Sesión abierta exitosamente
-    if (update.type === "connection_open") {
-        console.log("Cliente conectado:", update.data.id);
+    if (msg.type === 'connection_open') {
+        console.log('Connected as:', msg.data.id);
     }
 });
 
-// Evento de mensajes entrantes
-client.on("messages.upsert", (upsert) => {
-    console.log("Mensajes recibidos:", upsert);
+// Listen for incoming messages.
+instance.on('messages.upsert', (data) => {
+    console.log('New message:', data);
 });
 
-// Iniciar el worker de la instancia
-await client.start();
+// Start the worker.
+await instance.start();
 ```
 
 ---
 
-### 2. Conexión mediante código de emparejamiento (Pairing Code)
+## Connection Types
 
-Si necesitas conectar un número sin escanear QR:
+### QR Code
 
-```javascript
-import { BaileysIPC } from "./BaileysIPC/index.js";
-
-const manager = new BaileysIPC("./storage");
-
-const client = manager.createInstance("sesion_soporte", {
-    connectType: "pin-code",
-    phoneNumber: "573001234567", // Número con código de país
-    customCode: "ABC12345"       // Opcional: código de 8 caracteres
+```js
+manager.createInstance('session-a', {
+    connectType: 'qr-code'
 });
+```
 
-client.on("connection.update", (update) => {
-    if (update.pincode) {
-        console.log("Código de vinculación:", update.data.pairingCode);
+When a QR code is ready, `connection.update` fires with:
+
+```js
+{
+    event: 'connection',
+    type: 'connection_pairing',
+    qrcode: true,
+    data: {
+        rawQrCode: '...',
+        qrCodeImage: 'data:image/png;base64,...',  // ready for an <img> tag
+        qrCodeText: '...'                           // ASCII terminal render
     }
-});
+}
+```
 
-await client.start();
+### Pin Code (Pairing Code)
+
+```js
+manager.createInstance('session-b', {
+    connectType: 'pin-code',
+    phoneNumber: '5491123456789',  // digits only, no + or spaces
+    customCode: 'MYCODE1'          // optional, 8 chars max
+});
+```
+
+When the code is ready, `connection.update` fires with:
+
+```js
+{
+    event: 'connection',
+    type: 'connection_pairing',
+    pincode: true,
+    data: {
+        pairingCode: 'ABC-12345'
+    }
+}
 ```
 
 ---
 
-### 3. Envío de mensajes
+## Events
 
-Todas las llamadas a funciones de Baileys se realizan a través de `client.sock`. El proxy se encarga de transferir la orden al worker:
+`InstanceIPC` extends `EventEmitter`.
 
-```javascript
-import fs from "fs";
+| Event | Payload | Description |
+|---|---|---|
+| `connection.update` | `msg` object | Fires on any connection state change. Check `msg.type`. |
+| `messages.upsert` | `data` object | Fires when new messages arrive. |
+| `exit` | `{ code, signal }` | Fires when the worker thread exits. |
 
-const jid = "1234567890@s.whatsapp.net";
+**`msg.type` values for `connection.update`:**
 
-// Texto plano
-await client.sock.sendMessage(jid, {
-    text: "Hola, mensaje de prueba."
+- `connection_pairing` - QR or pin code ready. Check `msg.qrcode` or `msg.pincode`.
+- `connection_open` - Session authenticated. `msg.data` contains user info (`id`, `lid`, etc).
+- `connection_close` - Session disconnected. `msg.action` is `'restart'` or `'stop'`.
+
+---
+
+## Sending Messages
+
+`instance.sock` is a Proxy that mirrors the Baileys socket API. Call methods on it as you normally would. Every call returns a Promise.
+
+```js
+// Text message
+await instance.sock.sendMessage('5491123456789@s.whatsapp.net', {
+    text: 'Hello'
 });
 
-// Imagen desde Buffer
-const buffer = fs.readFileSync("./foto.jpg");
-await client.sock.sendMessage(jid, {
-    image: buffer,
-    caption: "Descripción de la imagen"
-});
+// Any Baileys method works the same way
+await instance.sock.sendPresenceUpdate('available', jid);
+await instance.sock.readMessages([msgKey]);
 
-// Audio/Nota de voz desde Stream
-const stream = fs.createReadStream("./audio.mp3");
-await client.sock.sendMessage(jid, {
-    audio: { stream },
-    mimetype: "audio/mp4",
-    ptt: true
-});
+// Accessing properties also works
+const user = await instance.sock.user;
 ```
 
 ---
 
-### 4. Múltiples instancias simultáneas
+## Media Handling
 
-Puedes gestionar varias cuentas en paralelo bajo el mismo gestor:
+Buffers and Streams cannot be passed through `worker_thread` message channels directly. BaileysIPC handles this transparently in `sendMessage`. You can pass media as a `Buffer`, a `Readable` stream, or use the provided helpers.
 
-```javascript
-import { BaileysIPC } from "./BaileysIPC/index.js";
+```js
+import fs from 'fs';
 
-const manager = new BaileysIPC("./storage");
+// From a Buffer
+const imageBuffer = fs.readFileSync('./photo.jpg');
+await instance.sock.sendMessage(jid, {
+    image: imageBuffer,
+    caption: 'A photo'
+});
+```
 
-const sesion1 = manager.createInstance("cuenta_1", { connectType: "qr-code" });
-const sesion2 = manager.createInstance("cuenta_2", { connectType: "qr-code" });
+```js
+import { FileToStream } from './BaileysIPC/index.js';
 
-await sesion1.start();
-await sesion2.start();
+// From a file path
+await instance.sock.sendMessage(jid, {
+    video: { stream: FileToStream('./clip.mp4') },
+    caption: 'A video'
+});
+```
 
-// Ver identificadores de instancias activas en memoria
-console.log("Instancias corriendo:", manager.InstancesActive());
+**Stream utilities exported from `index.js`:**
 
-// Detener una sesión sin borrar sus credenciales
-await sesion1.stop();
+```js
+import { FileToStream, BufferToStream, StreamToFile, StreamToBuffer } from './BaileysIPC/index.js';
 
-// Eliminar definitivamente una sesión (cierra sesión en WhatsApp y borra datos de SQLite)
-await manager.destroyInstance("cuenta_1");
+FileToStream('./audio.ogg')          // file path -> Readable
+BufferToStream(someBuffer)           // Buffer    -> Readable
+await StreamToFile(stream, './out')  // Readable  -> file
+await StreamToBuffer(stream)         // Readable  -> Buffer
 ```
 
 ---
 
-## Interceptores de Baileys (`InterceptBaileys`)
+## Instance Lifecycle
 
-### ¿Qué son y por qué existen?
+```js
+// Create (worker not started yet)
+const instance = manager.createInstance('id', options);
 
-Los hilos de Node.js (`worker_threads`) se comunican mediante paso de mensajes serializados (`postMessage`). Esto tiene dos limitaciones técnicas con Baileys:
+// Start the worker
+await instance.start();
 
-1. **Streams:** Un `ReadableStream` no se puede transferir directamente mediante `postMessage`.
-2. **Buffers grandes:** Enviar buffers multimedia grandes por el canal IPC sin control puede degradar el rendimiento o saturar la memoria.
+// Stop without deleting the session (can be resumed with start())
+await instance.stop();
 
-Para resolver esto, existen dos archivos de intercepción que actúan como puente:
+// Destroy: logout + stop + wipe session from SQLite
+await manager.destroyInstance('id');
 
-- **Lado principal (`BaileysIPC/Library/InterceptBaileys.js`):** Intercepta la llamada antes de enviarla al worker. Si detecta un `Buffer` o un `Stream` en la carga multimedia, lo registra en un gestor de transmisión por fragmentos (`StreamSender`), reemplaza el objeto por un token identificador (`__ipcStreamId`), y despacha la petición al worker.
-- **Lado worker (`BaileysIPC/Worker/Library/InterceptBaileys.js`):** Intercepta la petición antes de que llegue a la función real de Baileys. Al detectar el token `__ipcStreamId`, inicializa un flujo receptor (`StreamReceiver`) que reconstruye el stream en tiempo real dentro del worker y se lo entrega al socket de Baileys.
+// Check if credentials exist in SQLite
+manager.hasStoredInstance('id');   // true/false
+
+// Check if actively running in memory
+manager.hasInstance('id');         // true/false
+
+// List all active instance IDs
+manager.InstancesActive();         // string[]
+```
+
+**Auto-restart:** If the worker exits unexpectedly, `IPCWorker` schedules a restart after 5 seconds, as long as the instance was not stopped intentionally. All pending requests and streams are rejected on restart so callers do not hang.
+
+**Disconnect reasons that trigger a restart:** `restartRequired`, `connectionLost`, `connectionClosed`, `unavailableService`, `timedOut`.
+
+**Disconnect reasons that stop the instance and clear the session:** `loggedOut`, `badSession`, `multideviceMismatch`, `forbidden`, `connectionReplaced`.
 
 ---
 
-### ¿Cómo editar o agregar nuevos interceptores?
+## Interceptors
 
-Si deseas dar soporte a una función de Baileys que maneje archivos binarios o que requiera transformar argumentos antes de llegar al worker, debes modificar ambos lados:
+### What they are
 
-#### Paso 1: Agregar el método en el hilo principal (`Library/InterceptBaileys.js`)
+An interceptor is a named method that runs instead of the default IPC dispatch when a matching method is called through `instance.sock`. There are two layers: one on the main thread (`Library/InterceptBaileys.js`) and one inside the worker (`Worker/Library/InterceptBaileys.js`). They are designed to work as a pair for the same method name.
 
-Aquí capturas el método, transformas los buffers o streams en tokens IPC y envías la petición:
+### Why they exist
 
-```javascript
-// Dentro de BaileysIPC/Library/InterceptBaileys.js
+The IPC channel uses `postMessage`, which only handles structured-clone-compatible data. Node.js `Readable` streams are not. Interceptors solve this by converting a stream on the main thread into a series of chunked binary messages over IPC, and reassembling them into a `PassThrough` stream on the worker side for Baileys to consume normally.
 
-customMediaMethod(jid, content) {
-    if (content?.image && isBuffer(content.image)) {
-        // Convierte el Buffer en stream y genera un ID de seguimiento IPC
-        content.image = {
-            stream: this.instance.streamSender.prepare(BufferToStream(content.image))
+### Full flow for a media send
+
+```
+Your code
+  sock.sendMessage(jid, { image: buffer })
+        |
+        v
+Main InterceptBaileys.sendMessage()
+  - Converts Buffer to stream via BufferToStream()
+  - Pauses the stream, assigns ID (e.g. A1B2C3D4), stores in StreamSender
+  - Replaces buffer with token: { __ipcStreamId: 'A1B2C3D4' }
+  - Calls instance.request({ type:'SOCKET', PATH:['sendMessage'], ARGS:[jid, {image:{__ipcStreamId:'A1B2C3D4'}}, opts] })
+        |
+        v
+Worker receives message in Message.js
+  - Detects 'sendMessage' has a worker interceptor
+  - Worker InterceptBaileys.sendMessage() runs
+      - Finds __ipcStreamId in content
+      - Calls StreamReceiver.init('A1B2C3D4')
+          -> Creates PassThrough stream
+          -> Sends STREAM_READY back to main thread
+        |
+        v
+Main thread receives STREAM_READY
+  - StreamSender.start('A1B2C3D4')
+  - Stream resumes, emits chunks as MAIN_STREAM_CHUNK (ArrayBuffer, transferred not copied)
+  - On stream end: sends MAIN_STREAM_END
+        |
+        v
+Worker receives chunks
+  - StreamReceiver.write() pipes each chunk into PassThrough
+  - StreamReceiver.end() closes the PassThrough
+        |
+        v
+Worker calls real Baileys method
+  sock.sendMessage(jid, { image: { stream: PassThrough } }, opts)
+        |
+        v
+Worker posts result
+  { requestId, status: 'success', data }
+        |
+        v
+Main thread IPCRequest resolves the Promise
+```
+
+### Currently intercepted methods
+
+| Method | What the interceptor does |
+|---|---|
+| `sendMessage` | Converts `image`, `video`, `audio`, `document`, or `sticker` Buffer/Stream to an IPC stream token. |
+| `updateProfilePicture` | Same conversion on the `content` argument. |
+| `newsletterUpdatePicture` | Same conversion on the `content` argument. |
+
+The `user` property is also intercepted as a plain value. When the session connects, `instance.Intercept.user` is set locally. Accessing `sock.user` returns it from memory without an IPC round-trip.
+
+### Adding your own interceptor
+
+Both files must be edited. The method name must be identical in both.
+
+**Step 1 - `Library/InterceptBaileys.js` (main thread)**
+
+This side handles non-serializable arguments and dispatches the IPC request.
+
+```js
+myMethod(jid, imageBuffer) {
+    if (isBuffer(imageBuffer)) {
+        imageBuffer = {
+            stream: this.instance.streamSender.prepare(BufferToStream(imageBuffer))
         };
     }
-
-    // Envía la petición hacia el worker
     return this.instance.request({
         type: 'SOCKET',
-        PATH: ['customMediaMethod'],
-        ARGS: [jid, content]
-    }, null);
+        PATH: ['myMethod'],
+        ARGS: [jid, imageBuffer]
+    }, null); // null = no timeout, required for stream calls
 }
 ```
 
-#### Paso 2: Agregar el método en el worker (`Worker/Library/InterceptBaileys.js`)
+**Step 2 - `Worker/Library/InterceptBaileys.js` (worker thread)**
 
-Aquí recibes los argumentos, reconstruyes el stream a partir del ID recibido y retornas el array de argumentos con los que Baileys llamará a la función:
+This side restores stream tokens back into real streams and returns the modified argument array.
 
-```javascript
-// Dentro de BaileysIPC/Worker/Library/InterceptBaileys.js
-
-customMediaMethod(jid, content) {
-    if (content?.image?.stream?.__ipcStreamId) {
-        const streamId = content.image.stream.__ipcStreamId;
-        // Reconstruye el stream en el worker
-        content.image = this.streamReceiver.init(streamId);
+```js
+myMethod(jid, imageBuffer) {
+    if (imageBuffer?.stream?.__ipcStreamId) {
+        const streamId = imageBuffer.stream.__ipcStreamId;
+        imageBuffer.stream = this.streamReceiver.init(streamId);
     }
-
-    // Retorna los argumentos en orden tal como los espera Baileys
-    return [jid, content];
+    return [jid, imageBuffer];
 }
 ```
 
-Con estos dos pasos, cualquier método nuevo que agregues procesará archivos multimedia entre el proceso principal y el worker sin errores de serialización.
+> The method name in both interceptors must match the last segment of the property path used when calling `sock.myMethod(...)`.
+
+For methods that do not involve streams, you can still intercept to transform arguments. Call `this.instance.request()` with a normal timeout and skip the stream machinery on both sides.
+
+---
+
+## IPC Message Reference
+
+### Main thread to Worker
+
+| type | Purpose | Fields |
+|---|---|---|
+| `SOCKET` | Call a method or access a property on the Baileys socket. | `PATH`, `ARGS`, `requestId` |
+| `MAIN_STREAM_CHUNK` | A data chunk from a main-thread stream. | `streamId`, `chunk` (ArrayBuffer) |
+| `MAIN_STREAM_END` | End of a main-thread stream. | `streamId` |
+| `MAIN_STREAM_ERROR` | Error in a main-thread stream. | `streamId`, `error` |
+| `STREAM_READY` | Tells the main StreamSender it can start sending chunks. | `streamId` |
+
+### Worker to Main thread
+
+| type / fields | Purpose |
+|---|---|
+| `requestId` + `status:'success'` | Successful response. Contains `data`. |
+| `requestId` + `status:'error'` | Failed response. Contains `error`. |
+| `STREAM_READY` | Worker StreamReceiver is ready to accept chunks. |
+| `event:'connection'` | Any connection state update. |
+| `event:'messages'` | Incoming Baileys messages. |
+
+---
+
+## Internal Classes
+
+### BaileysIPC
+
+Top-level manager. Creates and tracks `InstanceIPC` objects. Exposes `createInstance`, `destroyInstance`, `hasInstance`, `hasStoredInstance`, `getInstance`, `InstancesActive`.
+
+### InstanceIPC
+
+Per-session controller. Extends `EventEmitter`. Owns the `IPCWorker`, `IPCRequest`, `StreamSender`, `StreamReceiver`, `InterceptBaileys`, and `IPCProxy`. Handles message routing between all components.
+
+### IPCProxy
+
+A recursive `Proxy` that translates property chains and function calls into IPC messages. When a method is called, it checks for a matching interceptor first. If none exists, it dispatches the call via `IPCRequest`. Property accesses return a nested Proxy that continues building the path until the chain is called or awaited.
+
+### IPCRequest
+
+Tracks pending request-response pairs. Each outgoing message gets a random hex `requestId`. The Promise is stored in a `Map`. When the worker responds with the matching ID and status, the Promise resolves or rejects. A configurable timeout rejects requests that receive no response. `clear()` rejects everything on stop or crash.
+
+### IPCWorker
+
+Thin wrapper around Node.js `Worker`. Handles start, stop, message routing, and auto-restart on unexpected exit. Options are deep-cloned via `structuredClone` before being passed as `workerData`.
+
+### StreamSender / StreamReceiver
+
+`StreamSender` manages outgoing streams: pauses them, assigns IDs, resumes and chunks them when the remote side signals readiness. `StreamReceiver` manages incoming streams: creates `PassThrough` streams, writes chunks, signals readiness. Both exist on both threads, handling each direction of transfer.
+
+### AuthState (Worker)
+
+Implements the Baileys `AuthenticationState` interface backed by SQLite (`node:sqlite`). Credentials and signal keys are stored in a `baileys_sessions` table. Uses WAL mode, transactions for writes, and a module-level connection cache to avoid duplicate open connections.
+
+### StoreIPCs (Main thread)
+
+Opens the same SQLite file from the main thread (read queries only) to check whether stored credentials exist for a given instance. Used by `hasStoredInstance` and `destroyInstance`.
