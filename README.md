@@ -433,4 +433,4 @@ Opens the same SQLite file from the main thread (read queries only) to check whe
 
 ---
 
-> **Developed by [Zepthh](https://github.com/Zeppth) & [Orwyth](https://github.com/Syllkom)**
+> **Developed by [Zeppth](https://github.com/Zeppth) & [Orwyth](https://github.com/Syllkom)**
