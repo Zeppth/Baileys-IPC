@@ -1,16 +1,16 @@
 import {
     isBuffer,
     BufferToStream,
-    isStream,
-} from "./IPCStreams.js";
+    isStream
+} from './IPCStreams.js'
 
 export class InterceptBaileys {
     /**
-     * Creates a InterceptBaileys instance.
+     * Creates an InterceptBaileys instance.
      * @param {InstanceIPC} instance - The parent client instance.
      */
     constructor(instance) {
-        this.instance = instance;
+        this.instance = instance
     }
 
     /**
@@ -21,27 +21,27 @@ export class InterceptBaileys {
      * @returns {Promise<any>|Error} The IPC request promise or an Error if validation fails.
      */
     sendMessage(jid, content, options) {
-        if (typeof jid !== 'string') throw new TypeError('jid must be a string');
-        if (typeof content !== 'object') throw new TypeError('content must be an object');
-        if (content === null || content === undefined) throw new TypeError('content must be an object');
-        if (Array.isArray(content)) throw new TypeError('content must be an object');
+        if (typeof jid !== 'string') throw new TypeError('jid must be a string')
+        if (typeof content !== 'object') throw new TypeError('content must be an object')
+        if (content === null || content === undefined) throw new TypeError('content must be an object')
+        if (Array.isArray(content)) throw new TypeError('content must be an object')
 
         const isMedia = ['audio', 'video', 'image', 'document', 'sticker']
-            .find((key) => content[key]);
+            .find((key) => content[key])
 
         if (isMedia) {
-            const mediaContent = content[isMedia];
+            const mediaContent = content[isMedia]
             if (isBuffer(mediaContent)) content[isMedia] = {
                 stream: this.instance.streamSender.prepare(BufferToStream(mediaContent))
-            }; else if (isStream(mediaContent?.stream)) content[isMedia] = {
+            } else if (isStream(mediaContent?.stream)) content[isMedia] = {
                 stream: this.instance.streamSender.prepare(mediaContent.stream)
-            };
+            }
         }
 
         return this.instance.request({
             type: 'SOCKET', PATH: ['sendMessage'],
             ARGS: [jid, content, options]
-        }, null);
+        }, null)
     }
 
     /**
@@ -51,41 +51,70 @@ export class InterceptBaileys {
      * @returns {Promise<any>|Error} The IPC request promise or an Error if validation fails.
      */
     newsletterUpdatePicture(jid, content) {
-        if (typeof jid !== 'string') throw new TypeError('jid must be a string');
-        if (typeof content !== 'object') throw new TypeError('content must be an object');
-        if (content === null || content === undefined) throw new TypeError('content must be an object');
-        if (Array.isArray(content)) throw new TypeError('content must be an object');
+        if (typeof jid !== 'string') throw new TypeError('jid must be a string')
+        if (typeof content !== 'object') throw new TypeError('content must be an object')
+        if (content === null || content === undefined) throw new TypeError('content must be an object')
+        if (Array.isArray(content)) throw new TypeError('content must be an object')
 
         if (isBuffer(content)) content = {
             stream: this.instance.streamSender.prepare(BufferToStream(content))
-        };
+        }
         else if (isStream(content?.stream)) content = {
             stream: this.instance.streamSender.prepare(content.stream)
-        };
+        }
 
         return this.instance.request({
             type: 'SOCKET', PATH: ['newsletterUpdatePicture'],
             ARGS: [jid, content]
-        }, null);
+        }, null)
     }
 
     /**
-     * Intercepta la subida de multimedia a servidores MMS de WhatsApp via IPC.
+     * Intercepts profile picture updates, processes media, and forwards the request via IPC.
+     * @param {string} jid - The user/target JID.
+     * @param {Buffer|Readable|Object} content - Image content as a Buffer, Stream, or stream wrapper.
+     * @param {Object} [dimensions] - Optional picture dimensions configuration.
+     * @returns {Promise<any>|Error} The IPC request promise or an Error if validation fails.
      */
-    waUploadToServer(streamOrBuffer, options) {
-        let stream = streamOrBuffer;
-        if (isBuffer(streamOrBuffer)) {
-            stream = BufferToStream(streamOrBuffer);
-        } else if (streamOrBuffer?.stream) {
-            stream = streamOrBuffer.stream;
+    updateProfilePicture(jid, content, dimensions) {
+        if (typeof jid !== 'string') throw new TypeError('jid must be a string')
+        if (typeof content !== 'object') throw new TypeError('content must be an object')
+        if (content === null || content === undefined) throw new TypeError('content must be an object')
+        if (Array.isArray(content)) throw new TypeError('content must be an object')
+
+        if (isBuffer(content)) content = {
+            stream: this.instance.streamSender.prepare(BufferToStream(content))
+        }
+        else if (isStream(content?.stream)) content = {
+            stream: this.instance.streamSender.prepare(content.stream)
         }
 
-        const streamToken = this.instance.streamSender.prepare(stream);
+        return this.instance.request({
+            type: 'SOCKET', PATH: ['updateProfilePicture'],
+            ARGS: [jid, content, dimensions]
+        }, null)
+    }
+
+    /**
+     * Intercepts media upload to WhatsApp MMS servers via IPC.
+     * @param {Buffer|Readable|Object} streamOrBuffer - The media stream or buffer.
+     * @param {Object} options - Upload options.
+     * @returns {Promise<any>}
+     */
+    waUploadToServer(streamOrBuffer, options) {
+        let stream = streamOrBuffer
+        if (isBuffer(streamOrBuffer)) {
+            stream = BufferToStream(streamOrBuffer)
+        } else if (streamOrBuffer?.stream) {
+            stream = streamOrBuffer.stream
+        }
+
+        const streamToken = this.instance.streamSender.prepare(stream)
 
         return this.instance.request({
             type: 'SOCKET',
             PATH: ['waUploadToServer'],
             ARGS: [streamToken, options]
-        }, 30000);
+        }, 30000)
     }
 }
