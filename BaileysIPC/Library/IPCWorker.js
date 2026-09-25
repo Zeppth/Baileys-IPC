@@ -40,10 +40,16 @@ export class IPCWorker {
      * @param {...any} args - Arguments to pass to worker's postMessage.
      * @returns {any|null} PostMessage result or null if worker is not active.
      */
-    send(...args) {
+    send(data, transferList) {
         if (!this.worker) return null;
-        try { return this.worker.postMessage(...args) }
-        catch (e) { return console.error(e); }
+        try {
+            if (Array.isArray(transferList) && transferList.length > 0) {
+                return this.worker.postMessage(data, transferList);
+            }
+            return this.worker.postMessage(data);
+        } catch (e) {
+            return console.error(e);
+        }
     }
 
     /**
