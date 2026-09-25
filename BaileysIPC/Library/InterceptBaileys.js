@@ -70,28 +70,22 @@ export class InterceptBaileys {
     }
 
     /**
-     * Intercepts profile picture updates, processes media, and forwards the request via IPC.
-     * @param {string} jid - The user/target JID.
-     * @param {Buffer|Readable|Object} content - Image content as a Buffer, Stream, or stream wrapper.
-     * @param {Object} [dimensions] - Optional picture dimensions configuration.
-     * @returns {Promise<any>|Error} The IPC request promise or an Error if validation fails.
+     * Intercepta la subida de multimedia a servidores MMS de WhatsApp via IPC.
      */
-    updateProfilePicture(jid, content, dimensions) {
-        if (typeof jid !== 'string') throw new TypeError('jid must be a string');
-        if (typeof content !== 'object') throw new TypeError('content must be an object');
-        if (content === null || content === undefined) throw new TypeError('content must be an object');
-        if (Array.isArray(content)) throw new TypeError('content must be an object');
+    waUploadToServer(streamOrBuffer, options) {
+        let stream = streamOrBuffer;
+        if (isBuffer(streamOrBuffer)) {
+            stream = BufferToStream(streamOrBuffer);
+        } else if (streamOrBuffer?.stream) {
+            stream = streamOrBuffer.stream;
+        }
 
-        if (isBuffer(content)) content = {
-            stream: this.instance.streamSender.prepare(BufferToStream(content))
-        };
-        else if (isStream(content?.stream)) content = {
-            stream: this.instance.streamSender.prepare(content.stream)
-        };
+        const streamToken = this.instance.streamSender.prepare(stream);
 
         return this.instance.request({
-            type: 'SOCKET', PATH: ['updateProfilePicture'],
-            ARGS: [jid, content, dimensions]
-        }, null);
+            type: 'SOCKET',
+            PATH: ['waUploadToServer'],
+            ARGS: [streamToken, options]
+        }, 30000);
     }
 }
