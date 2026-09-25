@@ -113,6 +113,7 @@ export class InstanceIPC extends EventEmitter {
         this.Intercept = new InterceptBaileys(this);
         this.sock = new IPCProxy(this.request
             .bind(this), this.Intercept);
+        this.conn = this.sock;
     }
 
     /**
