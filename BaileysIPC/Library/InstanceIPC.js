@@ -84,6 +84,8 @@ export class InstanceIPC extends EventEmitter {
             //connetion
             if (msg.type === 'connection_open') {
                 this.Intercept.user = msg.data;
+                this.sock.user = msg.data;
+                this.conn.user = msg.data;
             }
 
             else if (msg.type === 'connection_close') {
