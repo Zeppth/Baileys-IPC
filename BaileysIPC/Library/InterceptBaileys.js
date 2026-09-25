@@ -1,6 +1,7 @@
 import {
     isBuffer,
     BufferToStream,
+    FileToStream,
     isStream
 } from './IPCStreams.js'
 
@@ -83,12 +84,15 @@ export class InterceptBaileys {
         }, null)
     }
 
-    waUploadToServer(streamOrBuffer, options) {
-        let stream = streamOrBuffer
-        if (isBuffer(streamOrBuffer)) {
-            stream = BufferToStream(streamOrBuffer)
-        } else if (streamOrBuffer?.stream) {
-            stream = streamOrBuffer.stream
+    waUploadToServer(streamOrBufferOrPath, options) {
+        let stream = streamOrBufferOrPath
+
+        if (typeof streamOrBufferOrPath === 'string') {
+            stream = FileToStream(streamOrBufferOrPath)
+        } else if (isBuffer(streamOrBufferOrPath)) {
+            stream = BufferToStream(streamOrBufferOrPath)
+        } else if (streamOrBufferOrPath?.stream) {
+            stream = streamOrBufferOrPath.stream
         }
 
         const streamToken = this.instance.streamSender.prepare(stream)
