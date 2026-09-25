@@ -27,7 +27,6 @@ export default async (update, sock, clearSession) => {
                 reasonCode: reason
             })
         } else if (reason === DisconnectReason.loggedOut) {
-            // Unicamente borrar la base de datos si el usuario cerro sesion desde su telefono
             await clearSession()
             return parentPort.postMessage({
                 event: 'connection',
@@ -43,7 +42,6 @@ export default async (update, sock, clearSession) => {
                 reasonCode: reason
             })
         } else {
-            // Cualquier otro error o desconexion temporal reinicia sin borrar la sesion
             return parentPort.postMessage({
                 event: 'connection',
                 type: 'connection_close',
