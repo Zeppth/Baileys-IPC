@@ -1,0 +1,24 @@
+{
+  "name": "baileys-ipc",
+  "version": "1.0.0",
+  "description": "IPC architecture layer for Baileys multi-instance",
+  "type": "module",
+  "main": "BaileysIPC/index.js",
+  "exports": {
+    ".": "./BaileysIPC/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zeppth/Baileys-IPC.git"
+  },
+  "author": "Zeppth & Orwyth",
+  "license": "MIT",
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "latest",
+    "dot-prop": "^10.2.0",
+    "pino": "9.1.0",
+    "qrcode": "^1.5.3",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
