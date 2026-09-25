@@ -181,10 +181,12 @@ export class StreamSender {
     * @returns {{ __ipcStreamId: string }} The IPC stream tracking token object.
     */
     prepare(stream) {
-        const streamId = generateId(8);
-        stream.pause();
-        this.streams.set(streamId, stream);
-        return { __ipcStreamId: streamId };
+        const streamId = generateId(8)
+        if (typeof stream?.pause === 'function') {
+            stream.pause()
+        }
+        this.streams.set(streamId, stream)
+        return { __ipcStreamId: streamId }
     }
 
     /**
