@@ -1,19 +1,17 @@
-
 export class InterceptBaileys {
     constructor(streamReceiver, streamSender, sock) {
-        this.streamReceiver = streamReceiver;
-        this.streamSender = streamSender;
-        this.sock = sock;
+        this.streamReceiver = streamReceiver
+        this.streamSender = streamSender
+        this.sock = sock
     }
 
     sendMessage(jid, content, options) {
         if (content && typeof content === 'object') {
-            const mediaType = ['audio', 'video', 'image',
-                'document', 'sticker'].find(o => content[o]);
+            const mediaType = ['audio', 'video', 'image', 'document', 'sticker'].find(o => content[o])
 
             if (mediaType && content[mediaType]?.stream?.__ipcStreamId) {
-                const streamId = content[mediaType].stream.__ipcStreamId;
-                content[mediaType].stream = this.streamReceiver.init(streamId);
+                const streamId = content[mediaType].stream.__ipcStreamId
+                content[mediaType].stream = this.streamReceiver.init(streamId)
             }
         }
 
@@ -22,8 +20,8 @@ export class InterceptBaileys {
 
     newsletterUpdatePicture(jid, content) {
         if (content?.stream?.__ipcStreamId) {
-            const streamId = content.stream.__ipcStreamId;
-            content.stream = this.streamReceiver.init(streamId);
+            const streamId = content.stream.__ipcStreamId
+            content.stream = this.streamReceiver.init(streamId)
         }
 
         return [jid, content]
@@ -31,10 +29,19 @@ export class InterceptBaileys {
 
     updateProfilePicture(jid, content, dimensions) {
         if (content?.stream?.__ipcStreamId) {
-            const streamId = content.stream.__ipcStreamId;
-            content.stream = this.streamReceiver.init(streamId);
+            const streamId = content.stream.__ipcStreamId
+            content.stream = this.streamReceiver.init(streamId)
         }
 
         return [jid, content, dimensions]
+    }
+
+    waUploadToServer(streamToken, options) {
+        if (streamToken?.__ipcStreamId) {
+            const stream = this.streamReceiver.init(streamToken.__ipcStreamId)
+            return [stream, options]
+        }
+
+        return [streamToken, options]
     }
 }
