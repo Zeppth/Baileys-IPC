@@ -65,7 +65,7 @@ export const BufferToStream = (input) => {
     if (!input) throw new Error('Input is required');
     const buffer = Buffer.isBuffer(input)
         ? input : Buffer.from(input);
-    return Readable.from([buffer]);
+    return Readable.from(buffer);
 };
 
 /**
